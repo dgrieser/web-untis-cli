@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dgrieser/web-untis-cli/internal/config"
 	"github.com/dgrieser/web-untis-cli/internal/dates"
 	"github.com/dgrieser/web-untis-cli/internal/mailer"
 	"github.com/dgrieser/web-untis-cli/internal/render"
@@ -453,6 +454,12 @@ func (a *app) forwardOnce(ctx context.Context, c *webuntis.Client, folder string
 			candidates = append(candidates, m)
 		}
 	}
+	var smtpCfg config.SMTPConfig
+	if !dryRun && !markOnly {
+		if smtpCfg, err = a.smtpConfig(c.Profile); err != nil {
+			return err
+		}
+	}
 	sent, skipped := 0, 0
 	for _, m := range candidates {
 		if !force && state.Has(folder, m.ID) {
@@ -491,11 +498,11 @@ func (a *app) forwardOnce(ctx context.Context, c *webuntis.Client, folder string
 			}
 		}
 		webURL := c.Profile.BaseURL() + "/messages/" + map[string]string{webuntis.FolderInbox: "inbox", webuntis.FolderSent: "sent"}[folder]
-		msg, err := mailer.Build(c.Profile.SMTP, c.Profile.School, webURL, d, files)
+		msg, err := mailer.Build(smtpCfg, c.Profile.School, webURL, d, files)
 		if err != nil {
 			return err
 		}
-		if err := mailer.Send(ctx, c.Profile.SMTP, msg); err != nil {
+		if err := mailer.Send(ctx, smtpCfg, msg); err != nil {
 			return err
 		}
 		state.Mark(folder, m.ID)

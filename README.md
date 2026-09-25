@@ -76,14 +76,24 @@ Scripts can use flags instead of the wizard: `config smtp --host … --user … 
 
 Everything lives in `~/.cache/webuntis-cli/<profile>/` (override with `$WEBUNTIS_CLI_HOME`):
 
-- `config.json`: school, credentials, SMTP settings (file mode 0600)
+- `config.json`: school, username, SMTP settings (file mode 0600)
 - `session.json`: the login session
 - `cache/`: response cache
 - `forwarded.json`, `news-seen.json`, `news-forwarded.json`: already sent and already seen items
 
-The password is stored so the tool can log in again when the session expires. `--no-store-password` or `$WEBUNTIS_PASSWORD` avoids that.
+**Passwords** (WebUntis and SMTP) are kept in the system keyring: Secret Service on
+Linux, Keychain on macOS, Credential Manager on Windows. They are stored under
+the services `webuntis-cli` / `webuntis-cli-smtp` with the profile name as
+account, and only after the server accepted the password. The tool reads them
+only when the session has expired.
 
-Environment variables: `WEBUNTIS_PROFILE`, `WEBUNTIS_OUTPUT`, `WEBUNTIS_STYLE`, `WEBUNTIS_FORM_THEME`, `WEBUNTIS_SMTP_PASSWORD`.
+- `--no-keyring` / `$WEBUNTIS_NO_KEYRING=1` keeps passwords in `config.json`
+  (e.g. headless machines without Secret Service).
+- `--no-store-password` stores nothing; `$WEBUNTIS_PASSWORD` /
+  `$WEBUNTIS_SMTP_PASSWORD` override the stored passwords.
+- `logout --forget` removes the keyring entries.
+
+Environment variables: `WEBUNTIS_PROFILE`, `WEBUNTIS_OUTPUT`, `WEBUNTIS_STYLE`, `WEBUNTIS_FORM_THEME`, `WEBUNTIS_NO_KEYRING`.
 
 ## How it works
 

@@ -79,6 +79,18 @@ func (c *Client) rpc(ctx context.Context, method string, params any, out any) er
 	return nil
 }
 
+// ErrNoPassword may be returned by Options.Password when nothing is stored.
+var ErrNoPassword = errors.New("no stored password")
+
+func firstNonEmptyStr(s ...string) string {
+	for _, x := range s {
+		if x != "" {
+			return x
+		}
+	}
+	return ""
+}
+
 // AuthResult is returned by the JSON-RPC authenticate method.
 type AuthResult struct {
 	SessionID  string `json:"sessionId"`
@@ -90,9 +102,15 @@ type AuthResult struct {
 // Login authenticates with the stored credentials.
 func (c *Client) Login(ctx context.Context) error {
 	p := c.Profile
-	password := p.Password
-	if password == "" {
-		password = os.Getenv("WEBUNTIS_PASSWORD")
+	var password string
+	if c.password != nil {
+		pw, err := c.password()
+		if err != nil && !errors.Is(err, ErrNoPassword) {
+			return fmt.Errorf("%w: %v", ErrAuth, err)
+		}
+		password = pw
+	} else {
+		password = firstNonEmptyStr(p.Password, os.Getenv("WEBUNTIS_PASSWORD"))
 	}
 	if p.Username == "" || password == "" {
 		return fmt.Errorf("%w: session expired and no stored password (run `webuntis login`)", ErrAuth)
@@ -113,7 +131,7 @@ func (c *Client) Login(ctx context.Context) error {
 	}
 	var re *RPCError
 	if errors.As(err, &re) && re.Code == rpcBadCredentials {
-		return fmt.Errorf("login failed: bad credentials for %q at school %q", p.Username, p.School)
+		return fmt.Errorf("login failed: bad credentials for %q at school %q (if you changed your password, run `webuntis login` to update the stored one)", p.Username, p.School)
 	}
 	if err != nil {
 		c.debugf("JSON-RPC authenticate failed (%v), trying form login", err)

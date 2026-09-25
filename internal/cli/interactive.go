@@ -47,7 +47,7 @@ Same as running "webuntis login" without arguments on a terminal.`,
 			return a.runSetup(cmd.Context(), noStore)
 		},
 	}
-	cmd.Flags().BoolVar(&noStore, "no-store-password", false, "do not store the password on disk")
+	cmd.Flags().BoolVar(&noStore, "no-store-password", false, "do not store the password (neither keyring nor file)")
 	return cmd
 }
 
@@ -207,7 +207,12 @@ func (a *app) runSetup(ctx context.Context, noStore bool) error {
 					Value(&user).Validate(notEmpty("Benutzername")),
 				huh.NewInput().Title("Passwort").EchoMode(huh.EchoModePassword).Value(&password).Validate(notEmpty("Passwort")),
 				huh.NewConfirm().Title("Passwort speichern?").
-					Description("Erlaubt automatische Neuanmeldung, gespeichert mit Dateimodus 0600.").
+					DescriptionFunc(func() string {
+						if a.noKeyring {
+							return "Erlaubt automatische Neuanmeldung; gespeichert in config.json (Dateimodus 0600)."
+						}
+						return "Erlaubt automatische Neuanmeldung; gespeichert im Schlüsselbund des Systems."
+					}, nil).
 					Affirmative("Ja").Negative("Nein").Value(&storePw),
 			),
 		}
@@ -218,9 +223,9 @@ func (a *app) runSetup(ctx context.Context, noStore bool) error {
 			return abortErr(err)
 		}
 		p := &config.Profile{Name: name, Server: school.Server, School: school.LoginName, TenantID: school.TenantID,
-			SchoolDisplayName: school.DisplayName, Username: strings.TrimSpace(user), Password: password}
+			SchoolDisplayName: school.DisplayName, Username: strings.TrimSpace(user)}
 		fmt.Fprintf(os.Stderr, "Anmelden bei %s …\n", firstNonEmpty(school.DisplayName, school.LoginName))
-		ad, err := a.performLogin(ctx, p, existing, !storePw)
+		ad, err := a.performLogin(ctx, p, existing, password, !storePw)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "✗", err)
 			retry := true

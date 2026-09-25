@@ -15,6 +15,7 @@ import (
 	"github.com/dgrieser/web-untis-cli/internal/config"
 	"github.com/dgrieser/web-untis-cli/internal/dates"
 	"github.com/dgrieser/web-untis-cli/internal/render"
+	"github.com/dgrieser/web-untis-cli/internal/secrets"
 	"github.com/dgrieser/web-untis-cli/internal/webuntis"
 )
 
@@ -22,12 +23,13 @@ import (
 var Version = "dev"
 
 type app struct {
-	output  string
-	profile string
-	student string
-	refresh bool
-	debug   bool
-	style   string
+	output    string
+	profile   string
+	student   string
+	refresh   bool
+	debug     bool
+	noKeyring bool
+	style     string
 
 	format render.Format
 	client *webuntis.Client
@@ -93,6 +95,7 @@ Get started:
 	pf.StringVarP(&a.student, "student", "s", "", "student name or id (for parent accounts with several children)")
 	pf.BoolVarP(&a.refresh, "refresh", "r", false, "bypass the local cache and fetch fresh data")
 	pf.BoolVar(&a.debug, "debug", false, "print HTTP requests to stderr")
+	pf.BoolVar(&a.noKeyring, "no-keyring", os.Getenv("WEBUNTIS_NO_KEYRING") != "", "do not use the system keyring; store passwords in the profile's config.json (mode 0600)")
 	pf.StringVar(&a.style, "style", os.Getenv("WEBUNTIS_STYLE"), "markdown style: auto, dark, light, notty, dracula, tokyo-night, pink, ascii or a glamour JSON file")
 
 	root.AddGroup(
@@ -144,7 +147,7 @@ func (a *app) api() (*webuntis.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, err := webuntis.New(p, webuntis.Options{NoCache: a.refresh, Debug: a.debug})
+	c, err := webuntis.New(p, webuntis.Options{NoCache: a.refresh, Debug: a.debug, Password: a.passwordFunc(p)})
 	if err != nil {
 		return nil, err
 	}
@@ -221,4 +224,35 @@ func (a *app) schoolYearRange(ctx context.Context, c *webuntis.Client) (time.Tim
 		return t.AddDate(0, -6, 0), t.AddDate(0, 6, 0)
 	}
 	return dates.Day(y.DateRange.StartTime()), dates.Day(y.DateRange.EndTime())
+}
+
+// passwordFunc looks up the WebUntis password lazily (only when a login is
+// needed), so normal runs with a valid session never touch the keyring.
+func (a *app) passwordFunc(p *config.Profile) func() (string, error) {
+	return func() (string, error) {
+		pw, src, err := secrets.Get(p, secrets.WebUntis, a.noKeyring)
+		if errors.Is(err, secrets.ErrNotFound) {
+			return "", webuntis.ErrNoPassword
+		}
+		if err == nil && a.debug {
+			fmt.Fprintf(os.Stderr, "[debug] using WebUntis password from %s\n", src)
+		}
+		return pw, err
+	}
+}
+
+// smtpConfig returns the SMTP settings with the password resolved.
+func (a *app) smtpConfig(p *config.Profile) (config.SMTPConfig, error) {
+	cfg := p.SMTP
+	pw, _, err := secrets.Get(p, secrets.SMTP, a.noKeyring)
+	switch {
+	case errors.Is(err, secrets.ErrNotFound):
+		if cfg.Username != "" {
+			return cfg, fmt.Errorf("no SMTP password stored for %s (run `webuntis config smtp`)", cfg.Username)
+		}
+	case err != nil:
+		return cfg, err
+	}
+	cfg.Password = pw
+	return cfg, nil
 }

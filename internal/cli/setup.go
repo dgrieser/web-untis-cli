@@ -19,6 +19,7 @@ import (
 	"github.com/dgrieser/web-untis-cli/internal/config"
 	"github.com/dgrieser/web-untis-cli/internal/mailer"
 	"github.com/dgrieser/web-untis-cli/internal/render"
+	"github.com/dgrieser/web-untis-cli/internal/secrets"
 	"github.com/dgrieser/web-untis-cli/internal/webuntis"
 )
 
@@ -113,8 +114,10 @@ func (a *app) loginCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "login [SCHOOL-URL | SERVER | SCHOOL]",
 		Short: "Log in and store school + credentials",
-		Long: `Log in to WebUntis and store school, username and password in the profile
-directory (default ~/.cache/webuntis-cli/<profile>/config.json, mode 0600).
+		Long: `Log in to WebUntis. School and username are stored in the profile
+(~/.cache/webuntis-cli/<profile>/config.json), the password in the system
+keyring (Secret Service / macOS Keychain / Windows Credential Manager) once
+WebUntis accepted it. With --no-keyring it goes to config.json (mode 0600).
 
 Without arguments on a terminal, an interactive setup starts (same as
 "webuntis setup"): pick/create a profile, search the school, enter
@@ -175,8 +178,8 @@ session cookie (you will have to log in again when it expires).`,
 			if err != nil {
 				return err
 			}
-			p := &config.Profile{Name: name, Server: server, School: loginName, TenantID: tenant, SchoolDisplayName: display, Username: user, Password: password}
-			ad, err := a.performLogin(ctx, p, existing, noStore)
+			p := &config.Profile{Name: name, Server: server, School: loginName, TenantID: tenant, SchoolDisplayName: display, Username: user}
+			ad, err := a.performLogin(ctx, p, existing, password, noStore)
 			if err != nil {
 				return err
 			}
@@ -186,18 +189,23 @@ session cookie (you will have to log in again when it expires).`,
 	cmd.Flags().StringVar(&school, "school", "", "school login name (if not part of the URL)")
 	cmd.Flags().StringVarP(&user, "user", "u", "", "username")
 	cmd.Flags().BoolVar(&pwStdin, "password-stdin", false, "read the password from stdin")
-	cmd.Flags().BoolVar(&noStore, "no-store-password", false, "do not store the password on disk")
+	cmd.Flags().BoolVar(&noStore, "no-store-password", false, "do not store the password (neither keyring nor file)")
 	return cmd
 }
 
-// performLogin logs in with p, stores the profile and makes it current
-// (unless --profile was given explicitly).
-func (a *app) performLogin(ctx context.Context, p, existing *config.Profile, noStore bool) (*webuntis.AppData, error) {
+// performLogin logs in with p and password, stores the password (system
+// keyring, or config.json with --no-keyring) only after the server accepted
+// it, saves the profile and makes it current (unless --profile was given).
+func (a *app) performLogin(ctx context.Context, p, existing *config.Profile, password string, noStore bool) (*webuntis.AppData, error) {
 	if existing != nil {
-		p.SMTP, p.Student, p.Timezone = existing.SMTP, existing.Student, existing.Timezone
+		p.SMTP, p.Student, p.Timezone, p.CredentialStore = existing.SMTP, existing.Student, existing.Timezone, existing.CredentialStore
+		if existing.School == p.School && existing.Username == p.Username {
+			p.Password = existing.Password // keep a file-stored password until replaced below
+		}
 	}
 	_ = p.ClearSession()
-	c, err := webuntis.New(p, webuntis.Options{Debug: a.debug, NoCache: true})
+	c, err := webuntis.New(p, webuntis.Options{Debug: a.debug, NoCache: true,
+		Password: func() (string, error) { return password, nil }})
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +216,15 @@ func (a *app) performLogin(ctx context.Context, p, existing *config.Profile, noS
 	if err != nil {
 		return nil, err
 	}
-	if noStore {
-		p.Password = ""
+	switch {
+	case noStore:
+		if err := secrets.Delete(p, secrets.WebUntis, a.noKeyring); err != nil {
+			fmt.Fprintln(os.Stderr, "Warning:", err)
+		}
+	default:
+		if err := secrets.Set(p, secrets.WebUntis, password, a.noKeyring); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: password not stored: %v\n", err)
+		}
 	}
 	if err := p.Save(); err != nil {
 		return nil, err
@@ -255,6 +270,9 @@ func (a *app) logoutCmd() *cobra.Command {
 			}
 			a.client = nil
 			if forget {
+				if err := secrets.DeleteAll(c.Profile, a.noKeyring); err != nil {
+					fmt.Fprintln(os.Stderr, "Warning:", err)
+				}
 				if err := os.RemoveAll(c.Profile.Path()); err != nil {
 					return err
 				}
@@ -265,7 +283,7 @@ func (a *app) logoutCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&forget, "forget", false, "also delete stored credentials, settings and cache of the profile")
+	cmd.Flags().BoolVar(&forget, "forget", false, "also delete stored passwords (keyring), settings and cache of the profile")
 	return cmd
 }
 
@@ -278,7 +296,8 @@ type statusInfo struct {
 	Roles     []string           `json:"roles" yaml:"roles"`
 	Students  []webuntis.Student `json:"students" yaml:"students"`
 	Year      string             `json:"schoolYear" yaml:"schoolYear"`
-	Password  bool               `json:"passwordStored" yaml:"passwordStored"`
+	Password  string             `json:"passwordStorage" yaml:"passwordStorage"` // keyring, file or empty
+	SMTPPass  string             `json:"smtpPasswordStorage,omitempty" yaml:"smtpPasswordStorage,omitempty"`
 	SMTP      bool               `json:"smtpConfigured" yaml:"smtpConfigured"`
 	ConfigDir string             `json:"configDir" yaml:"configDir"`
 }
@@ -301,7 +320,10 @@ func (a *app) statusCmd() *cobra.Command {
 			p := c.Profile
 			info := statusInfo{Profile: p.Name, Server: p.Server, School: p.School, Display: firstNonEmpty(p.SchoolDisplayName, ad.Tenant.DisplayName),
 				Username: ad.User.Name, Roles: ad.User.Roles, Students: students, Year: ad.CurrentSchoolYear.Name,
-				Password: p.Password != "", SMTP: mailer.Validate(p.SMTP) == nil, ConfigDir: p.Path()}
+				Password: string(secrets.Where(p, secrets.WebUntis, a.noKeyring)), SMTP: mailer.Validate(p.SMTP) == nil, ConfigDir: p.Path()}
+			if info.SMTP && p.SMTP.Username != "" {
+				info.SMTPPass = string(secrets.Where(p, secrets.SMTP, a.noKeyring))
+			}
 			return a.emit(info, func() string {
 				var d render.Doc
 				d.H(2, "%s", render.Esc(info.Display))
@@ -311,7 +333,8 @@ func (a *app) statusCmd() *cobra.Command {
 				}
 				d.KV("Profil", info.Profile, "Server", info.Server, "Schule", info.School, "Benutzer", "`"+info.Username+"`",
 					"Rollen", strings.Join(info.Roles, ", "), "Schüler", strings.Join(s, ", "), "Schuljahr", info.Year,
-					"Passwort gespeichert", render.Check(info.Password)+map[bool]string{true: "", false: "nein"}[info.Password],
+					"Passwort gespeichert", storageLabel(info.Password),
+					"SMTP-Passwort", map[bool]string{true: storageLabel(info.SMTPPass), false: ""}[info.SMTPPass != "" || (info.SMTP && p.SMTP.Username != "")],
 					"SMTP konfiguriert", render.Check(info.SMTP)+map[bool]string{true: "", false: "nein"}[info.SMTP],
 					"Verzeichnis", info.ConfigDir)
 				return d.String()
@@ -399,11 +422,19 @@ func (a *app) configCmd() *cobra.Command {
 			if masked.SMTP.Password != "" {
 				masked.SMTP.Password = "********"
 			}
+			out := struct {
+				config.Profile
+				PasswordStorage     string `json:"passwordStorage"`
+				SMTPPasswordStorage string `json:"smtpPasswordStorage,omitempty"`
+			}{masked, string(secrets.Where(p, secrets.WebUntis, a.noKeyring)), ""}
+			if p.SMTP.Username != "" {
+				out.SMTPPasswordStorage = string(secrets.Where(p, secrets.SMTP, a.noKeyring))
+			}
 			if a.format == render.Pretty || a.format == render.Markdown {
-				b, _ := json.MarshalIndent(masked, "", "  ")
+				b, _ := json.MarshalIndent(out, "", "  ")
 				return a.renderer().Markdown("## Profil `" + p.Name + "`\n\n```json\n" + string(b) + "\n```\n")
 			}
-			return a.renderer().Data(masked)
+			return a.renderer().Data(out)
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -463,6 +494,9 @@ The SMTP password can also be provided via $WEBUNTIS_SMTP_PASSWORD.`,
 				return err
 			}
 			if clear {
+				if err := secrets.Delete(p, secrets.SMTP, a.noKeyring); err != nil {
+					return err
+				}
 				p.SMTP = config.SMTPConfig{}
 				return p.Save()
 			}
@@ -491,13 +525,19 @@ The SMTP password can also be provided via $WEBUNTIS_SMTP_PASSWORD.`,
 			if f.Changed("subject-prefix") {
 				p.SMTP.SubjectPrefix = prefix
 			}
+			var smtpPw string
 			switch {
 			case pwStdin:
-				if p.SMTP.Password, err = readStdinSecret(); err != nil {
+				if smtpPw, err = readStdinSecret(); err != nil {
 					return err
 				}
 			case pwPrompt:
-				if p.SMTP.Password, err = promptPassword("SMTP password: "); err != nil {
+				if smtpPw, err = promptPassword("SMTP password: "); err != nil {
+					return err
+				}
+			}
+			if smtpPw != "" {
+				if err := secrets.Set(p, secrets.SMTP, smtpPw, a.noKeyring); err != nil {
 					return err
 				}
 			}
@@ -531,7 +571,7 @@ The SMTP password can also be provided via $WEBUNTIS_SMTP_PASSWORD.`,
 			if err != nil {
 				return err
 			}
-			return sendTestMail(cmd.Context(), p)
+			return a.sendTestMail(cmd.Context(), p)
 		},
 	})
 	return cmd
@@ -695,4 +735,14 @@ func printRawJSON(a *app, b []byte) error {
 
 func anyChanged(f *pflag.FlagSet, names ...string) bool {
 	return slices.ContainsFunc(names, f.Changed)
+}
+
+func storageLabel(src string) string {
+	switch secrets.Source(src) {
+	case secrets.SourceKeyring:
+		return "✓ Schlüsselbund"
+	case secrets.SourceFile:
+		return "✓ config.json"
+	}
+	return "nein"
 }

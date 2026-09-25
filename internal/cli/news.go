@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/dgrieser/web-untis-cli/internal/config"
 	"github.com/dgrieser/web-untis-cli/internal/dates"
 	"github.com/dgrieser/web-untis-cli/internal/mailer"
 	"github.com/dgrieser/web-untis-cli/internal/tracker"
@@ -141,6 +142,12 @@ func (a *app) forwardNewsOnce(ctx context.Context, c *webuntis.Client, day time.
 		}
 		items = sel
 	}
+	var smtpCfg config.SMTPConfig
+	if !dryRun && !markOnly {
+		if smtpCfg, err = a.smtpConfig(c.Profile); err != nil {
+			return err
+		}
+	}
 	sent, skipped := 0, 0
 	for _, m := range items {
 		if !force && state.Has(newsKind, m.ID) {
@@ -156,11 +163,11 @@ func (a *app) forwardNewsOnce(ctx context.Context, c *webuntis.Client, day time.
 		case dryRun:
 			fmt.Fprintf(os.Stderr, "would forward news %d  %s\n", m.ID, m.Subject)
 		default:
-			msg, err := mailer.BuildNews(c.Profile.SMTP, c.Profile.School, c.Profile.SchoolDisplayName, c.Profile.BaseURL()+"/today", m)
+			msg, err := mailer.BuildNews(smtpCfg, c.Profile.School, c.Profile.SchoolDisplayName, c.Profile.BaseURL()+"/today", m)
 			if err != nil {
 				return err
 			}
-			if err := mailer.Send(ctx, c.Profile.SMTP, msg); err != nil {
+			if err := mailer.Send(ctx, smtpCfg, msg); err != nil {
 				return err
 			}
 			state.Mark(newsKind, m.ID)

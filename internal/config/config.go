@@ -30,7 +30,7 @@ type SMTPConfig struct {
 	Host          string   `json:"host,omitempty"`
 	Port          int      `json:"port,omitempty"`
 	Username      string   `json:"username,omitempty"`
-	Password      string   `json:"password,omitempty"`
+	Password      string   `json:"password,omitempty"` // file storage only, see Profile.CredentialStore
 	From          string   `json:"from,omitempty"`
 	To            []string `json:"to,omitempty"`
 	Security      string   `json:"security,omitempty"` // starttls (default), tls, none
@@ -39,16 +39,21 @@ type SMTPConfig struct {
 
 // Profile is one configured WebUntis login.
 type Profile struct {
-	Name              string     `json:"-"`
-	Server            string     `json:"server"` // e.g. ge-huellhorst.webuntis.com
-	School            string     `json:"school"` // login name, e.g. ge-huellhorst
-	TenantID          string     `json:"tenantId,omitempty"`
-	SchoolDisplayName string     `json:"schoolDisplayName,omitempty"`
-	Username          string     `json:"username"`
-	Password          string     `json:"password,omitempty"`
-	Student           string     `json:"student,omitempty"`  // default student (name or id) for parent accounts
-	Timezone          string     `json:"timezone,omitempty"` // IANA name used for ics output, default: local
-	SMTP              SMTPConfig `json:"smtp,omitzero"`
+	Name              string `json:"-"`
+	Server            string `json:"server"` // e.g. ge-huellhorst.webuntis.com
+	School            string `json:"school"` // login name, e.g. ge-huellhorst
+	TenantID          string `json:"tenantId,omitempty"`
+	SchoolDisplayName string `json:"schoolDisplayName,omitempty"`
+	Username          string `json:"username"`
+	// Password is only set when credentials are stored in this file
+	// (CredentialStore "file", i.e. --no-keyring).
+	// Use package secrets to read or store passwords.
+	Password string `json:"password,omitempty"`
+	// CredentialStore is "keyring" (default) or "file" (--no-keyring).
+	CredentialStore string     `json:"credentialStore,omitempty"`
+	Student         string     `json:"student,omitempty"`  // default student (name or id) for parent accounts
+	Timezone        string     `json:"timezone,omitempty"` // IANA name used for ics output, default: local
+	SMTP            SMTPConfig `json:"smtp,omitzero"`
 }
 
 // Cookie is a minimal persisted cookie.

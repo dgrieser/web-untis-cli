@@ -13,6 +13,7 @@ import (
 
 	"github.com/dgrieser/web-untis-cli/internal/config"
 	"github.com/dgrieser/web-untis-cli/internal/mailer"
+	"github.com/dgrieser/web-untis-cli/internal/secrets"
 )
 
 type smtpPreset struct {
@@ -102,9 +103,13 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 		prefix = "[WebUntis]"
 	}
 	password := ""
+	hasPassword := secrets.Where(p, secrets.SMTP, a.noKeyring) != secrets.SourceNone
 	pwDesc := "Leer lassen, um das gespeicherte Passwort zu behalten."
-	if cur.Password == "" {
-		pwDesc = "Wird im Profil gespeichert (Dateimodus 0600); alternativ $WEBUNTIS_SMTP_PASSWORD."
+	if !hasPassword {
+		pwDesc = "Wird im Schlüsselbund des Systems gespeichert; alternativ $WEBUNTIS_SMTP_PASSWORD."
+		if a.noKeyring {
+			pwDesc = "Wird in config.json gespeichert (Dateimodus 0600); alternativ $WEBUNTIS_SMTP_PASSWORD."
+		}
 	}
 	if hint != "" {
 		pwDesc = hint + " " + pwDesc
@@ -163,14 +168,18 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 	port, _ = strconv.Atoi(strings.TrimSpace(portStr))
 	p.SMTP = config.SMTPConfig{
 		Host: strings.TrimSpace(host), Port: port, Security: security,
-		Username: strings.TrimSpace(user), Password: cur.Password,
+		Username: strings.TrimSpace(user), Password: cur.Password, // file-stored only
 		From: strings.TrimSpace(from), To: splitAddresses(to), SubjectPrefix: strings.TrimSpace(prefix),
 	}
-	if password != "" {
-		p.SMTP.Password = password
-	}
-	if p.SMTP.Username == "" {
-		p.SMTP.Password = ""
+	switch {
+	case p.SMTP.Username == "":
+		if err := secrets.Delete(p, secrets.SMTP, a.noKeyring); err != nil {
+			return err
+		}
+	case password != "":
+		if err := secrets.Set(p, secrets.SMTP, password, a.noKeyring); err != nil {
+			return err
+		}
 	}
 	if err := mailer.Validate(p.SMTP); err != nil {
 		return err
@@ -186,7 +195,7 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 		Affirmative("Ja").Negative("Nein").Value(&test))).WithTheme(theme).RunWithContext(ctx); err != nil || !test {
 		return nil
 	}
-	err := sendTestMail(ctx, p)
+	err := a.sendTestMail(ctx, p)
 	if err == nil {
 		fmt.Fprintln(os.Stderr, "Weiterleiten: webuntis messages forward --mark-only && webuntis messages forward")
 		return nil
@@ -200,16 +209,20 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 	return a.runSMTPSetup(ctx, p) // prefilled with the values just entered
 }
 
-func sendTestMail(ctx context.Context, p *config.Profile) error {
+func (a *app) sendTestMail(ctx context.Context, p *config.Profile) error {
 	if err := mailer.Validate(p.SMTP); err != nil {
 		return err
 	}
-	msg, err := mailer.BuildTest(p.SMTP, firstNonEmpty(p.SchoolDisplayName, p.School))
+	cfg, err := a.smtpConfig(p)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Sende Testmail an %s …\n", strings.Join(p.SMTP.To, ", "))
-	if err := mailer.Send(ctx, p.SMTP, msg); err != nil {
+	msg, err := mailer.BuildTest(cfg, firstNonEmpty(p.SchoolDisplayName, p.School))
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Sende Testmail an %s …\n", strings.Join(cfg.To, ", "))
+	if err := mailer.Send(ctx, cfg, msg); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "✓ Testmail gesendet")

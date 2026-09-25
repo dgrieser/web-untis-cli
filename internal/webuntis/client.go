@@ -42,13 +42,17 @@ type Client struct {
 	session *config.Session
 	mu      sync.Mutex
 
-	appData *AppData
+	appData  *AppData
+	password func() (string, error)
 }
 
 // Options configure a Client.
 type Options struct {
 	NoCache bool // bypass cache reads
 	Debug   bool
+	// Password is called when a (re-)login is needed. Default: the
+	// profile's Password field, then $WEBUNTIS_PASSWORD.
+	Password func() (string, error)
 }
 
 // New creates a client for the given profile and restores its session.
@@ -58,11 +62,12 @@ func New(p *config.Profile, opts Options) (*Client, error) {
 		return nil, err
 	}
 	c := &Client{
-		Profile: p,
-		Cache:   cache.New(p.Path("cache"), opts.NoCache),
-		Debug:   opts.Debug || os.Getenv("WEBUNTIS_DEBUG") != "",
-		jar:     jar,
-		session: p.LoadSession(),
+		Profile:  p,
+		Cache:    cache.New(p.Path("cache"), opts.NoCache),
+		Debug:    opts.Debug || os.Getenv("WEBUNTIS_DEBUG") != "",
+		jar:      jar,
+		session:  p.LoadSession(),
+		password: opts.Password,
 	}
 	c.http = &http.Client{Jar: jar, Timeout: 60 * time.Second}
 	c.restoreCookies()
