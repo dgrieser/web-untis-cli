@@ -2,7 +2,6 @@ package mailer
 
 import (
 	"bytes"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,18 +47,23 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-func TestState(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "fwd.json")
-	s, err := LoadState(p)
+func TestBuildNews(t *testing.T) {
+	cfg := config.SMTPConfig{Host: "h", From: "me@example.com", To: []string{"me@example.com"}}
+	n := webuntis.MessageOfDay{ID: 371, Subject: "Einladung", Text: "<font>Hallo<br />Welt &amp; Co</font>",
+		Attachments: []webuntis.NewsAttachment{{Name: "Bild.png", DownloadURL: "https://x/y?a=1&b=2"}}}
+	msg, err := BuildNews(cfg, "school", "GES Test", "https://s.webuntis.com/today", n)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Mark("inbox", 1)
-	if err := s.Save(); err != nil {
+	var buf bytes.Buffer
+	if _, err := msg.WriteTo(&buf); err != nil {
 		t.Fatal(err)
 	}
-	s2, _ := LoadState(p)
-	if !s2.Has("inbox", 1) || s2.Has("inbox", 2) || s2.Has("sent", 1) {
-		t.Fatalf("state: %+v", s2.Forwarded)
+	s := buf.String()
+	for _, want := range []string{"Subject: [WebUntis] Nachricht: Einladung", "Message-ID: <webuntis.school.news.371@webuntis-cli>",
+		"X-WebUntis-News-Id: 371", "Hallo\r\nWelt & Co", "Anhang: Bild.png: https://x/y?a", "text/html", "https://s.webuntis.com/today"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("news mail missing %q", want)
+		}
 	}
 }

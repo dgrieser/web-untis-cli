@@ -17,7 +17,7 @@ import (
 
 func (a *app) todayCmd() *cobra.Command {
 	var date string
-	var full, agenda bool
+	var full, agenda, onlyNew, peek, withHTML bool
 	cmd := &cobra.Command{
 		Use:     "today",
 		Aliases: []string{"heute", "news-list"},
@@ -25,8 +25,13 @@ func (a *app) todayCmd() *cobra.Command {
 		Long: `Shows the "Heute" page: system message, messages of the day incl.
 attachments, last login, last timetable import and unread counters.
 
---agenda additionally shows today's lessons, homework due and upcoming exams.`,
+--agenda additionally shows today's lessons, homework due and upcoming exams.
+
+News items not shown before are marked with 🆕 (tracked in
+<profile>/news-seen.json); --new shows only those, --peek does not mark
+anything as seen.`,
 		Example: `  webuntis today
+  webuntis today --new
   webuntis today --full
   webuntis today --agenda
   webuntis today --date 2026-10-07 -o json`,
@@ -44,7 +49,10 @@ attachments, last login, last timetable import and unread counters.
 			if err != nil {
 				return err
 			}
-			t := views.TodayData{Date: day, News: news, Agenda: agenda}
+			if news.MessagesOfDay, err = a.applySeen(c, news.MessagesOfDay, onlyNew, peek, withHTML); err != nil {
+				return err
+			}
+			t := views.TodayData{Date: day, News: news, Agenda: agenda, OnlyNew: onlyNew}
 			if ad, err := c.AppData(ctx); err == nil {
 				t.School = firstNonEmpty(c.Profile.SchoolDisplayName, strings.Join(strings.Fields(ad.Tenant.DisplayName), " "))
 				t.User = ad.User.Name
@@ -81,18 +89,28 @@ attachments, last login, last timetable import and unread counters.
 	cmd.Flags().StringVarP(&date, "date", "d", "", "day to show (default today)")
 	cmd.Flags().BoolVar(&full, "full", false, "show full text of all messages")
 	cmd.Flags().BoolVarP(&agenda, "agenda", "a", false, "also show today's lessons, homework due and upcoming exams")
+	cmd.Flags().BoolVar(&onlyNew, "new", false, "only news not shown before")
+	cmd.Flags().BoolVar(&peek, "peek", false, "do not mark shown news as seen")
+	cmd.Flags().BoolVar(&withHTML, "html", false, "include the original HTML body in json/yaml output")
 	return cmd
 }
 
 func (a *app) newsCmd() *cobra.Command {
 	var date string
-	return &cobra.Command{
+	var onlyNew, peek, withHTML bool
+	cmd := &cobra.Command{
 		Use:     "news [NUMBER|ID]",
 		Aliases: []string{"nachrichten"},
-		Short:   "Show messages of the day in full (all, or one by number/id)",
+		Short:   "Messages of the day in full; `news forward` sends new ones via SMTP",
+		Long: `Shows the messages of the day ("Heute → Nachrichten") in full.
+
+Items not shown before are marked with 🆕 (tracked in <profile>/news-seen.json);
+--new shows only those, --peek does not mark anything as seen.`,
 		Example: `  webuntis news        # all messages of the day, full text
+  webuntis news --new  # only news you have not seen yet
   webuntis news 1      # first message
-  webuntis news 371    # by id`,
+  webuntis news 371    # by id
+  webuntis news forward`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := a.api()
@@ -125,18 +143,30 @@ func (a *app) newsCmd() *cobra.Command {
 				}
 				items = sel
 			}
+			if items, err = a.applySeen(c, items, onlyNew, peek, withHTML); err != nil {
+				return err
+			}
 			return a.emit(items, func() string {
 				var parts []string
 				for _, m := range items {
 					parts = append(parts, views.NewsItem(m))
 				}
 				if len(parts) == 0 {
+					if onlyNew {
+						return "_Keine neuen Nachrichten._\n"
+					}
 					return "_Keine Nachrichten._\n"
 				}
 				return strings.Join(parts, "\n---\n\n")
 			}, nil)
 		},
 	}
+	cmd.Flags().StringVarP(&date, "date", "d", "", "day to show (default today)")
+	cmd.Flags().BoolVar(&onlyNew, "new", false, "only news not shown before")
+	cmd.Flags().BoolVar(&peek, "peek", false, "do not mark shown news as seen")
+	cmd.Flags().BoolVar(&withHTML, "html", false, "include the original HTML body in json/yaml output")
+	cmd.AddCommand(a.newsForwardCmd())
+	return cmd
 }
 
 // ---------------------------------------------------------------- timetable

@@ -31,6 +31,7 @@ type TodayData struct {
 	HomeworkDue   []webuntis.Homework      `json:"homeworkDue,omitempty" yaml:"homeworkDue,omitempty"`
 	UpcomingExams []webuntis.Exam          `json:"upcomingExams,omitempty" yaml:"upcomingExams,omitempty"`
 	Agenda        bool                     `json:"-" yaml:"-"`
+	OnlyNew       bool                     `json:"-" yaml:"-"`
 }
 
 // Today renders the "Heute" page.
@@ -64,7 +65,11 @@ func Today(t TodayData, full bool) string {
 		}
 		d.H(2, "📰 Nachrichten")
 		if len(t.News.MessagesOfDay) == 0 {
-			d.Empty("Keine Nachrichten für heute.")
+			if t.OnlyNew {
+				d.Empty("Keine neuen Nachrichten.")
+			} else {
+				d.Empty("Keine Nachrichten für heute.")
+			}
 		}
 		unread := map[int]bool{}
 		for _, c := range t.Cards {
@@ -74,6 +79,9 @@ func Today(t TodayData, full bool) string {
 		}
 		for _, m := range t.News.MessagesOfDay {
 			title := md.Esc(m.Subject)
+			if m.New {
+				title = "🆕 " + title
+			}
 			if unread[m.ID] {
 				title += " 🔵"
 			}
@@ -140,7 +148,11 @@ func systemMessage(v any) string {
 // NewsItem renders a single message of the day.
 func NewsItem(m webuntis.MessageOfDay) string {
 	var d md.Doc
-	d.H(1, "%s", md.Esc(m.Subject))
+	title := md.Esc(m.Subject)
+	if m.New {
+		title = "🆕 " + title
+	}
+	d.H(1, "%s", title)
 	d.P(md.Body(m.Text))
 	if len(m.Attachments) > 0 {
 		d.H(2, "Anhänge")

@@ -4,8 +4,8 @@ package mailer
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
+	"html"
 	"mime"
 	"os"
 	"path/filepath"
@@ -252,36 +252,66 @@ func Send(ctx context.Context, c config.SMTPConfig, msgs ...*mail.Msg) error {
 	return nil
 }
 
-// State tracks which messages have been forwarded already.
-type State struct {
-	path      string
-	Forwarded map[string]time.Time `json:"forwarded"` // key: folder/id
-}
-
-// LoadState reads the forward state file.
-func LoadState(path string) (*State, error) {
-	s := &State{path: path, Forwarded: map[string]time.Time{}}
-	err := config.ReadJSON(path, s)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+// BuildNews creates the e-mail for a message of the day ("Heute → Nachrichten").
+// The HTML part uses the original HTML of the news item.
+func BuildNews(c config.SMTPConfig, school, schoolName, webURL string, n webuntis.MessageOfDay) (*mail.Msg, error) {
+	msg := mail.NewMsg()
+	from := "WebUntis"
+	if schoolName != "" {
+		from = schoolName + " via WebUntis"
 	}
-	if s.Forwarded == nil {
-		s.Forwarded = map[string]time.Time{}
+	if err := msg.FromFormat(from, c.From); err != nil {
+		if err := msg.From(c.From); err != nil {
+			return nil, fmt.Errorf("invalid from address %q: %w", c.From, err)
+		}
 	}
-	return s, nil
+	if err := msg.To(c.To...); err != nil {
+		return nil, fmt.Errorf("invalid recipient: %w", err)
+	}
+	prefix := c.SubjectPrefix
+	if prefix == "" {
+		prefix = "[WebUntis]"
+	}
+	msg.Subject(strings.TrimSpace(prefix + " Nachricht: " + n.Subject))
+	msg.SetDate()
+	msg.SetMessageIDWithValue(fmt.Sprintf("webuntis.%s.news.%d@webuntis-cli", school, n.ID))
+	msg.SetGenHeader(mail.Header("X-WebUntis-News-Id"), fmt.Sprint(n.ID))
+	msg.SetGenHeader(mail.Header("X-WebUntis-School"), school)
+	msg.SetUserAgent("webuntis-cli")
+
+	var text strings.Builder
+	text.WriteString(n.Subject + "\n" + strings.Repeat("-", 60) + "\n\n")
+	text.WriteString(render.PlainText(n.Text) + "\n")
+	var links strings.Builder
+	for _, a := range n.Attachments {
+		if a.DownloadURL != "" {
+			fmt.Fprintf(&text, "\nAnhang: %s: %s", a.Name, a.DownloadURL)
+			fmt.Fprintf(&links, `<li><a href="%s">%s</a></li>`, html.EscapeString(a.DownloadURL), html.EscapeString(a.Name))
+		} else {
+			fmt.Fprintf(&text, "\nAnhang: %s", a.Name)
+			fmt.Fprintf(&links, `<li>%s</li>`, html.EscapeString(a.Name))
+		}
+	}
+	if webURL != "" {
+		fmt.Fprintf(&text, "\n\n--\nIn WebUntis öffnen: %s\n", webURL)
+	}
+	msg.SetBodyString(mail.TypeTextPlain, text.String())
+
+	var h strings.Builder
+	h.WriteString(`<!doctype html><html><body style="font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5">`)
+	fmt.Fprintf(&h, "<h2>%s</h2>", html.EscapeString(n.Subject))
+	body := n.Text
+	if !render.LooksLikeHTML(body) {
+		body = strings.ReplaceAll(html.EscapeString(body), "\n", "<br>")
+	}
+	h.WriteString("<div>" + body + "</div>")
+	if links.Len() > 0 {
+		h.WriteString("<h3>Anhänge</h3><ul>" + links.String() + "</ul>")
+	}
+	if webURL != "" {
+		fmt.Fprintf(&h, `<hr><p><a href="%s">In WebUntis öffnen</a></p>`, html.EscapeString(webURL))
+	}
+	h.WriteString("</body></html>")
+	msg.AddAlternativeString(mail.TypeTextHTML, h.String())
+	return msg, nil
 }
-
-// Key builds the state key of a message.
-func Key(folder string, id int) string { return fmt.Sprintf("%s/%d", folder, id) }
-
-// Has reports whether a message was forwarded.
-func (s *State) Has(folder string, id int) bool {
-	_, ok := s.Forwarded[Key(folder, id)]
-	return ok
-}
-
-// Mark records a forwarded message.
-func (s *State) Mark(folder string, id int) { s.Forwarded[Key(folder, id)] = time.Now() }
-
-// Save writes the state file.
-func (s *State) Save() error { return config.WriteJSON(s.path, s) }

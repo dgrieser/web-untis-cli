@@ -16,6 +16,7 @@ import (
 	"github.com/dgrieser/web-untis-cli/internal/dates"
 	"github.com/dgrieser/web-untis-cli/internal/mailer"
 	"github.com/dgrieser/web-untis-cli/internal/render"
+	"github.com/dgrieser/web-untis-cli/internal/tracker"
 	"github.com/dgrieser/web-untis-cli/internal/views"
 	"github.com/dgrieser/web-untis-cli/internal/webuntis"
 )
@@ -428,7 +429,7 @@ Note: forwarding opens the message, which marks it as read in WebUntis.`,
 }
 
 func (a *app) forwardOnce(ctx context.Context, c *webuntis.Client, folder string, ids []int, since time.Time, dryRun, force, markOnly, noAttach bool, limit int) error {
-	state, err := mailer.LoadState(c.Profile.Path("forwarded.json"))
+	state, err := tracker.Load(c.Profile.Path("forwarded.json"))
 	if err != nil {
 		return err
 	}

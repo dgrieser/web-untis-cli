@@ -12,8 +12,8 @@ import (
 
 	ics "github.com/arran4/golang-ical"
 	"github.com/charmbracelet/glamour"
+	"github.com/goccy/go-yaml"
 	"golang.org/x/term"
-	"gopkg.in/yaml.v3"
 )
 
 // Format is an output format.
@@ -130,8 +130,6 @@ func (r *Renderer) Raw(s string) error {
 func (r *Renderer) Data(v any) error {
 	switch r.Format {
 	case YAML:
-		enc := yaml.NewEncoder(r.Out)
-		enc.SetIndent(2)
 		// Round-trip through JSON so that json tags / omitempty and custom
 		// marshalers are respected consistently.
 		b, err := json.Marshal(v)
@@ -144,10 +142,12 @@ func (r *Renderer) Data(v any) error {
 		if err := dec.Decode(&generic); err != nil {
 			return err
 		}
-		if err := enc.Encode(numbers(generic)); err != nil {
+		out, err := yaml.MarshalWithOptions(numbers(generic), yaml.Indent(2), yaml.IndentSequence(true), yaml.UseLiteralStyleIfMultiline(true))
+		if err != nil {
 			return err
 		}
-		return enc.Close()
+		_, err = r.Out.Write(out)
+		return err
 	default:
 		enc := json.NewEncoder(r.Out)
 		enc.SetEscapeHTML(false)

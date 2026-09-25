@@ -1,7 +1,9 @@
 package webuntis
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/dgrieser/web-untis-cli/internal/cache"
 	"github.com/dgrieser/web-untis-cli/internal/dates"
+	"github.com/dgrieser/web-untis-cli/internal/render"
 )
 
 // ---------------------------------------------------------------- today / news
@@ -29,6 +32,31 @@ type MessageOfDay struct {
 	Text        string           `json:"text" yaml:"text"` // HTML
 	IsExpanded  bool             `json:"isExpanded" yaml:"isExpanded"`
 	Attachments []NewsAttachment `json:"attachments" yaml:"attachments"`
+	// New is set by the CLI for items not shown before (not part of the API).
+	New bool `json:"-" yaml:"-"`
+	// IncludeHTML adds the original HTML body as "html" to JSON output.
+	IncludeHTML bool `json:"-" yaml:"-"`
+}
+
+// MarshalJSON emits the body as plain text in "text"; the original HTML
+// from the API is added as "html" only if IncludeHTML is set.
+func (m MessageOfDay) MarshalJSON() ([]byte, error) {
+	type out struct {
+		ID          int              `json:"id"`
+		Subject     string           `json:"subject"`
+		New         bool             `json:"new"`
+		Text        string           `json:"text"`
+		HTML        string           `json:"html,omitempty"`
+		Attachments []NewsAttachment `json:"attachments"`
+	}
+	if m.Attachments == nil {
+		m.Attachments = []NewsAttachment{}
+	}
+	o := out{ID: m.ID, Subject: m.Subject, New: m.New, Text: render.PlainText(m.Text), Attachments: m.Attachments}
+	if m.IncludeHTML {
+		o.HTML = m.Text
+	}
+	return marshalNoEscape(o)
 }
 
 // News is the content of the "Heute -> Nachrichten" widget.
@@ -36,6 +64,31 @@ type News struct {
 	SystemMessage any            `json:"systemMessage" yaml:"systemMessage"`
 	MessagesOfDay []MessageOfDay `json:"messagesOfDay" yaml:"messagesOfDay"`
 	RSSURL        string         `json:"rssUrl" yaml:"rssUrl"`
+}
+
+// MarshalJSON converts an HTML system message to Markdown as well.
+func (n News) MarshalJSON() ([]byte, error) {
+	type alias News
+	a := alias(n)
+	if s, ok := a.SystemMessage.(string); ok && render.LooksLikeHTML(s) {
+		a.SystemMessage = render.PlainText(s)
+	}
+	if a.MessagesOfDay == nil {
+		a.MessagesOfDay = []MessageOfDay{}
+	}
+	return marshalNoEscape(a)
+}
+
+// marshalNoEscape is json.Marshal without escaping <, > and & (keeps the
+// raw HTML fields readable).
+func marshalNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // News returns the news of the given day.

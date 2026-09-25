@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"html"
 	"regexp"
 	"sort"
 	"strings"
@@ -205,7 +206,31 @@ func tidyMarkdown(md string) string {
 	return strings.TrimSpace(md)
 }
 
-var tagRe = regexp.MustCompile(`<[^>]*>`)
+var (
+	tagRe      = regexp.MustCompile(`<[^>]*>`)
+	blockTagRe = regexp.MustCompile(`(?i)<br\s*/?>|</p>|</div>|</li>|</h\d>|</tr>`)
+	liOpenRe   = regexp.MustCompile(`(?i)<li[^>]*>`)
+	hSpaceRe   = regexp.MustCompile(`[ \t\x{00a0}]+`)
+)
+
+// PlainText converts HTML (or plain text) into clean plain text: line
+// breaks for block elements, no tags, entities decoded, no trailing spaces.
+func PlainText(s string) string {
+	if LooksLikeHTML(s) {
+		s = liOpenRe.ReplaceAllString(s, "\n- ")
+		s = blockTagRe.ReplaceAllString(s, "\n")
+		s = tagRe.ReplaceAllString(s, "")
+		s = html.UnescapeString(s)
+	}
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\r\n", "\n"), "\r", "\n")
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSpace(hSpaceRe.ReplaceAllString(l, " "))
+	}
+	s = strings.Join(lines, "\n")
+	s = manyNewlinesRe.ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
+}
 
 // StripTags removes HTML tags.
 func StripTags(s string) string {

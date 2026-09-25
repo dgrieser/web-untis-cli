@@ -18,7 +18,7 @@ webuntis klassengeld -T          # balance, payments and bookings of klassengeld
 
 | WebUntis page | Command | Formats |
 | --- | --- | --- |
-| Heute → Nachrichten (`/today`) | `today`, `news` | pretty, md, json, yaml |
+| Heute → Nachrichten (`/today`) | `today`, `news`, `news forward` | pretty, md, json, yaml |
 | Mitteilungen (`/messages/inbox`, sent, drafts) | `messages [list\|show\|attachments\|forward\|inbox\|sent\|drafts]` | pretty, md, json, yaml |
 | Mein Stundenplan (`/timetable/my-student`) | `timetable` | pretty grid, md, json, yaml, **ics** |
 | Klassenstundenplan (`/timetable/class`) | `timetable --class [NAME]` | pretty grid, md, json, yaml, **ics** |
@@ -117,6 +117,24 @@ Forwarded messages are tracked in `<profile>/forwarded.json`; mails get a stable
 a text + HTML body and the attachments. `$WEBUNTIS_SMTP_PASSWORD` overrides the
 stored SMTP password.
 
+## News: "new" markers and forwarding
+
+`today` and `news` mark items you have not seen before with 🆕 (tracked in
+`<profile>/news-seen.json`). `--new` shows only unseen items, `--peek` shows
+without marking them as seen (JSON/YAML contain `"new": true|false`).
+
+```sh
+webuntis today --new
+webuntis news forward --dry-run
+webuntis news forward --mark-only       # baseline: skip the current news
+webuntis news forward                   # e-mail every news item once (HTML + text, attachment links)
+webuntis news forward --watch 30m
+```
+
+`news forward` uses the same SMTP settings as `messages forward` and tracks sent
+items in `<profile>/news-forwarded.json` (independent of the 🆕 state). It looks
+at the news of the given day (`--date`, default today), so run it at least daily.
+
 ## Storage and caching
 
 Default directory: `~/.cache/webuntis-cli` (`$XDG_CACHE_HOME`, override with
@@ -128,6 +146,8 @@ current                      active profile name
 <profile>/session.json       session cookies + JWT (reused between runs)
 <profile>/cache/             HTTP response cache
 <profile>/forwarded.json     forwarded message ids
+<profile>/news-seen.json     news items already shown (🆕 marker)
+<profile>/news-forwarded.json news items already sent via SMTP
 ```
 
 The password is stored in plain text (file mode 0600) so that expired sessions
