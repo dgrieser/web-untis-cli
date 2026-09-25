@@ -315,3 +315,39 @@ func BuildNews(c config.SMTPConfig, school, schoolName, webURL string, n webunti
 	msg.AddAlternativeString(mail.TypeTextHTML, h.String())
 	return msg, nil
 }
+
+// BuildTest creates a short test mail.
+func BuildTest(c config.SMTPConfig, school string) (*mail.Msg, error) {
+	msg := mail.NewMsg()
+	if err := msg.FromFormat("webuntis-cli", c.From); err != nil {
+		if err := msg.From(c.From); err != nil {
+			return nil, fmt.Errorf("invalid from address %q: %w", c.From, err)
+		}
+	}
+	if err := msg.To(c.To...); err != nil {
+		return nil, fmt.Errorf("invalid recipient: %w", err)
+	}
+	prefix := c.SubjectPrefix
+	if prefix == "" {
+		prefix = "[WebUntis]"
+	}
+	msg.Subject(prefix + " Testmail")
+	msg.SetDate()
+	msg.SetUserAgent("webuntis-cli")
+	body := "Die SMTP-Einstellungen von webuntis-cli funktionieren.\n"
+	if school != "" {
+		body += "Schule: " + school + "\n"
+	}
+	body += fmt.Sprintf("Server: %s:%d (%s)\n", c.Host, c.Port, firstNonEmptyStr(c.Security, "starttls"))
+	msg.SetBodyString(mail.TypeTextPlain, body)
+	return msg, nil
+}
+
+func firstNonEmptyStr(s ...string) string {
+	for _, x := range s {
+		if x != "" {
+			return x
+		}
+	}
+	return ""
+}

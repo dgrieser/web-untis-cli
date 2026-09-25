@@ -15,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/dgrieser/web-untis-cli/internal/config"
+	"github.com/dgrieser/web-untis-cli/internal/mailer"
 	"github.com/dgrieser/web-untis-cli/internal/webuntis"
 )
 
@@ -251,7 +252,20 @@ func (a *app) runSetup(ctx context.Context, noStore bool) error {
 				}
 			}
 		}
-		return a.printLoginSummary(p, ad)
+		if err := a.printLoginSummary(p, ad); err != nil {
+			return err
+		}
+
+		// ---- 4. optional: e-mail forwarding
+		if mailer.Validate(p.SMTP) != nil {
+			smtp := false
+			if err := huh.NewForm(huh.NewGroup(huh.NewConfirm().Title("E-Mail-Weiterleitung einrichten?").
+				Description("Mitteilungen und Nachrichten per SMTP an eine E-Mail-Adresse senden (später: webuntis config smtp)").
+				Affirmative("Ja").Negative("Später").Value(&smtp))).WithTheme(theme).RunWithContext(ctx); err == nil && smtp {
+				return a.runSMTPSetup(ctx, p)
+			}
+		}
+		return nil
 	}
 }
 

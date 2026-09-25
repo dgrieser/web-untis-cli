@@ -63,13 +63,14 @@ Opening an unread message marks it as read, just like in the web UI. Nothing els
 ## Forwarding via SMTP
 
 ```sh
-webuntis config smtp --host smtp.example.com --user me@example.com --password-prompt \
-    --from me@example.com --to me@example.com   # --security starttls|tls|opportunistic|none
+webuntis config smtp                            # wizard: provider presets (Gmail, GMX, …), test mail
+webuntis config smtp test                       # send a test mail
 webuntis messages forward --mark-only           # skip existing messages once
 webuntis messages forward --watch 10m           # or run from cron; same for `news forward`
 ```
 
 Already forwarded items are tracked, so every item is sent only once. `--dry-run` previews and `--force` resends.
+Scripts can use flags instead of the wizard: `config smtp --host … --user … --password-stdin --from … --to …`.
 
 ## Storage
 

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"golang.org/x/term"
 
 	"github.com/dgrieser/web-untis-cli/internal/config"
@@ -440,13 +442,19 @@ func (a *app) smtpConfigCmd() *cobra.Command {
 	var pwStdin, pwPrompt, clear bool
 	cmd := &cobra.Command{
 		Use:   "smtp",
-		Short: "Configure the SMTP server used by `messages forward`",
-		Long: `Configure the SMTP server used by "webuntis messages forward".
+		Short: "Configure the SMTP server used by `messages forward` / `news forward`",
+		Long: `Configure the SMTP server used by "webuntis messages forward" and
+"webuntis news forward".
+
+Without flags on a terminal, an interactive wizard starts (provider presets,
+test mail). "webuntis config smtp test" sends a test mail.
 
 Security modes: starttls (default, port 587), tls (implicit TLS, port 465),
 opportunistic (STARTTLS if offered), none (plain, port 25).
 The SMTP password can also be provided via $WEBUNTIS_SMTP_PASSWORD.`,
-		Example: `  webuntis config smtp --host smtp.example.com --user me@example.com --password-prompt \
+		Example: `  webuntis config smtp                 # interactive
+  webuntis config smtp test            # send a test mail
+  webuntis config smtp --host smtp.example.com --user me@example.com --password-prompt \
       --from me@example.com --to me@example.com
   webuntis config smtp --security tls --port 465`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -459,6 +467,9 @@ The SMTP password can also be provided via $WEBUNTIS_SMTP_PASSWORD.`,
 				return p.Save()
 			}
 			f := cmd.Flags()
+			if !anyChanged(f, "host", "port", "user", "from", "to", "security", "subject-prefix", "password-stdin", "password-prompt") && interactive() {
+				return a.runSMTPSetup(cmd.Context(), p)
+			}
 			if f.Changed("host") {
 				p.SMTP.Host = host
 			}
@@ -512,6 +523,17 @@ The SMTP password can also be provided via $WEBUNTIS_SMTP_PASSWORD.`,
 	f.StringVar(&security, "security", "", "starttls, tls, opportunistic, none")
 	f.StringVar(&prefix, "subject-prefix", "", `subject prefix (default "[WebUntis]")`)
 	f.BoolVar(&clear, "clear", false, "remove SMTP configuration")
+	cmd.AddCommand(&cobra.Command{
+		Use:   "test",
+		Short: "Send a test mail with the configured SMTP settings",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			p, err := a.loadProfile()
+			if err != nil {
+				return err
+			}
+			return sendTestMail(cmd.Context(), p)
+		},
+	})
 	return cmd
 }
 
@@ -669,4 +691,8 @@ func printRawJSON(a *app, b []byte) error {
 	}
 	r.Format = render.JSON
 	return r.Data(v)
+}
+
+func anyChanged(f *pflag.FlagSet, names ...string) bool {
+	return slices.ContainsFunc(names, f.Changed)
 }
