@@ -58,7 +58,9 @@ webuntis today
 The wizard lets you pick an existing profile or create a new one, search the
 school with live results from the WebUntis school directory (name, city, login
 name or URL), enter username/password, choose whether to store the password and
-pick the default student (parents with several children).
+pick the default student (parents with several children). Its colors follow
+your terminal's 16-color palette; `WEBUNTIS_FORM_THEME=charm|dracula|catppuccin|base16|plain`
+switches the theme.
 
 Non-interactive (scripts):
 

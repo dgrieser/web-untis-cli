@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
@@ -118,7 +119,7 @@ func notEmpty(what string) func(string) error {
 }
 
 func (a *app) runSetup(ctx context.Context, noStore bool) error {
-	theme := huh.ThemeCharm()
+	theme := formTheme()
 	profiles, _ := config.ListProfiles()
 
 	// ---- 1. profile
@@ -142,15 +143,15 @@ func (a *app) runSetup(ctx context.Context, noStore bool) error {
 			}
 			opts = append(opts, huh.NewOption(label, n))
 		}
-		opts = append(opts, huh.NewOption("➕ Neues Profil anlegen", newProfileChoice))
+		opts = append(opts, huh.NewOption("➕ Neue Anmeldung hinzufügen", newProfileChoice))
 		err := huh.NewForm(
 			huh.NewGroup(
-				huh.NewSelect[string]().Title("Profil").
-					Description("Ein Profil = eine Schule + ein Benutzerkonto").
+				huh.NewSelect[string]().Title("Anmeldung wählen").
+					Description("Gespeicherte Anmeldung aktualisieren oder eine weitere hinzufügen").
 					Options(opts...).Value(&choice),
 			),
 			huh.NewGroup(
-				huh.NewInput().Title("Name des neuen Profils").Placeholder("z.B. liana, schule2").Value(&newName).
+				huh.NewInput().Title("Kurzname für die neue Anmeldung").Description("Später nutzbar mit --profile <name>").Placeholder("z.B. liana, schule2").Value(&newName).
 					Validate(func(s string) error {
 						if err := config.ValidateProfileName(s); err != nil {
 							return err
@@ -252,6 +253,78 @@ func (a *app) runSetup(ctx context.Context, noStore bool) error {
 		}
 		return a.printLoginSummary(p, ad)
 	}
+}
+
+// formTheme returns the theme for interactive forms. The default uses only
+// the terminal's own 16 ANSI colors (so it follows the user's color scheme)
+// and avoids "bright black"/faint text, which is unreadable on many dark
+// themes. Override with $WEBUNTIS_FORM_THEME: ansi (default), charm,
+// dracula, catppuccin, base16, plain.
+func formTheme() *huh.Theme {
+	switch strings.ToLower(os.Getenv("WEBUNTIS_FORM_THEME")) {
+	case "charm":
+		return huh.ThemeCharm()
+	case "dracula":
+		return huh.ThemeDracula()
+	case "catppuccin":
+		return huh.ThemeCatppuccin()
+	case "base16":
+		return huh.ThemeBase16()
+	case "plain", "base":
+		return huh.ThemeBase()
+	}
+	var (
+		text     = lipgloss.Color("7")  // normal foreground
+		bright   = lipgloss.Color("15") // bright white
+		accent   = lipgloss.Color("6")  // cyan
+		selected = lipgloss.Color("2")  // green
+		pointer  = lipgloss.Color("3")  // yellow
+		errc     = lipgloss.Color("9")  // bright red
+	)
+	t := huh.ThemeBase16()
+	f := &t.Focused
+	f.Base = f.Base.BorderForeground(accent)
+	f.Card = f.Base
+	f.Title = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	f.NoteTitle = f.Title
+	f.Description = lipgloss.NewStyle().Foreground(text)
+	f.ErrorIndicator = f.ErrorIndicator.Foreground(errc)
+	f.ErrorMessage = f.ErrorMessage.Foreground(errc)
+	f.SelectSelector = f.SelectSelector.Foreground(pointer).Bold(true)
+	f.NextIndicator = f.NextIndicator.Foreground(pointer)
+	f.PrevIndicator = f.PrevIndicator.Foreground(pointer)
+	f.Option = f.Option.Foreground(text)
+	f.UnselectedOption = f.UnselectedOption.Foreground(text)
+	f.SelectedOption = f.SelectedOption.Foreground(selected).Bold(true)
+	f.SelectedPrefix = f.SelectedPrefix.Foreground(selected)
+	f.FocusedButton = lipgloss.NewStyle().Padding(0, 2).MarginRight(1).Foreground(lipgloss.Color("0")).Background(accent).Bold(true)
+	f.BlurredButton = lipgloss.NewStyle().Padding(0, 2).MarginRight(1).Foreground(text).Background(lipgloss.Color("0"))
+	f.TextInput.Cursor = f.TextInput.Cursor.Foreground(pointer)
+	f.TextInput.Placeholder = lipgloss.NewStyle().Foreground(text).Italic(true)
+	f.TextInput.Prompt = f.TextInput.Prompt.Foreground(pointer)
+	f.TextInput.Text = lipgloss.NewStyle().Foreground(bright)
+
+	t.Blurred = t.Focused
+	t.Blurred.Base = t.Blurred.Base.BorderStyle(lipgloss.HiddenBorder())
+	t.Blurred.Card = t.Blurred.Base
+	t.Blurred.Title = lipgloss.NewStyle().Foreground(text).Bold(true)
+	t.Blurred.NoteTitle = t.Blurred.Title
+	t.Blurred.TextInput.Prompt = t.Blurred.TextInput.Prompt.Foreground(text)
+	t.Blurred.TextInput.Text = lipgloss.NewStyle().Foreground(text)
+	t.Blurred.NextIndicator = lipgloss.NewStyle()
+	t.Blurred.PrevIndicator = lipgloss.NewStyle()
+
+	t.Group.Title = t.Focused.Title
+	t.Group.Description = t.Focused.Description
+
+	t.Help.ShortKey = lipgloss.NewStyle().Foreground(pointer)
+	t.Help.ShortDesc = lipgloss.NewStyle().Foreground(text)
+	t.Help.ShortSeparator = lipgloss.NewStyle().Foreground(text)
+	t.Help.FullKey = t.Help.ShortKey
+	t.Help.FullDesc = t.Help.ShortDesc
+	t.Help.FullSeparator = t.Help.ShortSeparator
+	t.Help.Ellipsis = t.Help.ShortSeparator
+	return t
 }
 
 func abortErr(err error) error {

@@ -290,7 +290,7 @@ func TimetableGridPretty(tt *webuntis.Timetable, name string, color bool, width 
 		title += " · " + name
 	}
 	head := lipgloss.NewStyle().Bold(true)
-	dim := lipgloss.NewStyle().Faint(true)
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("7")) // no Faint: unreadable on many dark themes
 	cancelled := lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("9"))
 	changed := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11"))
 	subjStyle := lipgloss.NewStyle().Bold(true)
