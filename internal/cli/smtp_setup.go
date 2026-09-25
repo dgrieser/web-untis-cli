@@ -90,10 +90,12 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 	if security == "" {
 		security = "starttls"
 	}
-	if port == 0 {
-		port = 587
+	// Only prefill a port that differs from the default of its security
+	// mode; otherwise leave it empty so the default follows the selection.
+	portStr := ""
+	if port != 0 && port != defaultPort(security) {
+		portStr = strconv.Itoa(port)
 	}
-	portStr := strconv.Itoa(port)
 
 	// ---- 2. server, account, addresses
 	user, from := cur.Username, cur.From
@@ -124,7 +126,15 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 				huh.NewOption("STARTTLS wenn verfügbar", "opportunistic"),
 				huh.NewOption("keine (Port 25, nur lokal!)", "none"),
 			).Value(&security),
-			huh.NewInput().Title("Port").Value(&portStr).Validate(func(s string) error {
+			huh.NewInput().Title("Port").
+				DescriptionFunc(func() string {
+					return fmt.Sprintf("Leer lassen für den Standard (%d)", defaultPort(security))
+				}, &security).
+				PlaceholderFunc(func() string { return strconv.Itoa(defaultPort(security)) }, &security).
+				Value(&portStr).Validate(func(s string) error {
+				if strings.TrimSpace(s) == "" {
+					return nil
+				}
 				if n, err := strconv.Atoi(strings.TrimSpace(s)); err != nil || n < 1 || n > 65535 {
 					return errors.New("ungültiger Port")
 				}
@@ -165,7 +175,11 @@ func (a *app) runSMTPSetup(ctx context.Context, p *config.Profile) error {
 	if to == "" {
 		to = from
 	}
-	port, _ = strconv.Atoi(strings.TrimSpace(portStr))
+	if n, err := strconv.Atoi(strings.TrimSpace(portStr)); err == nil {
+		port = n
+	} else if preset == customPreset || port == 0 {
+		port = defaultPort(security)
+	}
 	p.SMTP = config.SMTPConfig{
 		Host: strings.TrimSpace(host), Port: port, Security: security,
 		Username: strings.TrimSpace(user), Password: cur.Password, // file-stored only
@@ -227,4 +241,15 @@ func (a *app) sendTestMail(ctx context.Context, p *config.Profile) error {
 	}
 	fmt.Fprintln(os.Stderr, "✓ Testmail gesendet")
 	return nil
+}
+
+// defaultPort returns the usual SMTP port for a security mode.
+func defaultPort(security string) int {
+	switch security {
+	case "tls", "ssl":
+		return 465
+	case "none":
+		return 25
+	}
+	return 587
 }
