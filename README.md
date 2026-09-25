@@ -41,6 +41,17 @@ web UI: opening an unread message marks it as read.
 
 ## Install
 
+Prebuilt binaries for Linux x86-64, Linux ARM64, Linux ARMv7 and macOS Apple
+Silicon are attached to each [GitHub release](https://github.com/dgrieser/web-untis-cli/releases):
+
+```sh
+# example: Linux x86-64
+curl -sL https://github.com/dgrieser/web-untis-cli/releases/latest/download/webuntis_$(curl -s https://api.github.com/repos/dgrieser/web-untis-cli/releases/latest | grep -oP '"tag_name": "v\K[^"]+')_linux_amd64.tar.gz | tar xz webuntis
+sudo install webuntis /usr/local/bin/
+```
+
+Or build from source:
+
 ```sh
 go install github.com/dgrieser/web-untis-cli/cmd/webuntis@latest
 # or from a checkout
@@ -202,6 +213,19 @@ These are undocumented APIs and may change without notice.
 
 ```sh
 make test     # go test ./...
+make lint     # golangci-lint (config: .golangci.yml)
 make build    # ./bin/webuntis
 webuntis --debug …   # log HTTP requests (secrets redacted)
+```
+
+### Releases
+
+CI (`.github/workflows/ci.yml`) runs tests (incl. 32-bit), golangci-lint and a
+GoReleaser snapshot build of all targets on every push/PR. Pushing a tag
+`vX.Y.Z` runs `.github/workflows/release.yml`, which publishes a GitHub release
+with `tar.gz` archives and `checksums.txt` via GoReleaser (`.goreleaser.yaml`).
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+goreleaser release --snapshot --clean --skip=publish   # local dry run
 ```

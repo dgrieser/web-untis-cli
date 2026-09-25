@@ -625,18 +625,18 @@ func FormatValue(key string, v any) string {
 	case bool:
 		return md.Check(x)
 	case float64:
-		n := int(x)
+		n := int64(x) // int64: epoch milliseconds overflow int on 32-bit targets
 		if float64(n) == x {
 			if strings.Contains(lk, "date") && n > 19000101 && n < 21000101 {
-				return dates.Human(dates.FromInt(n))
+				return dates.Human(dates.FromInt(int(n)))
 			}
 			if strings.Contains(lk, "time") && n >= 0 && n <= 2400 {
-				return dates.HM(n)
+				return dates.HM(int(n))
 			}
 			if strings.Contains(lk, "date") && n > 1e12 {
-				return time.UnixMilli(int64(n)).Format("02.01.2006 15:04")
+				return time.UnixMilli(n).Format("02.01.2006 15:04")
 			}
-			return strconv.Itoa(n)
+			return strconv.FormatInt(n, 10)
 		}
 		return strconv.FormatFloat(x, 'f', -1, 64)
 	case string:
