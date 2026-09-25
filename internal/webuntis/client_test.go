@@ -83,16 +83,16 @@ func newFakeServer(t *testing.T) *fakeServer {
 		switch req.Method {
 		case "authenticate":
 			if req.Params["password"] != "secret" {
-				fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","error":{"message":"bad credentials","code":-8504}}`)
+				_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","error":{"message":"bad credentials","code":-8504}}`)
 				return
 			}
 			fs.logins.Add(1)
 			http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "SESSION1", Path: "/WebUntis"})
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":{"sessionId":"SESSION1","personType":12,"personId":8243}}`)
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":{"sessionId":"SESSION1","personType":12,"personId":8243}}`)
 		case "getLatestImportTime":
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":1790254884684}`)
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":1790254884684}`)
 		default:
-			fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":null}`)
+			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":null}`)
 		}
 	})
 	mux.HandleFunc("/WebUntis/api/token/new", func(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +102,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 			return
 		}
 		fs.tokenCalls.Add(1)
-		fmt.Fprint(w, fakeJWT(time.Now().Add(15*time.Minute)))
+		_, _ = fmt.Fprint(w, fakeJWT(time.Now().Add(15*time.Minute)))
 	})
 	mux.HandleFunc("/STORAGE/file", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-amz-test") != "1" {
@@ -110,7 +110,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 			return
 		}
 		w.Header().Set("Content-Type", "application/pdf")
-		io.WriteString(w, "%PDF-1.4 test")
+		_, _ = io.WriteString(w, "%PDF-1.4 test")
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/WebUntis/api/rest/") {
@@ -130,7 +130,7 @@ func newFakeServer(t *testing.T) *fakeServer {
 		}
 		body = strings.ReplaceAll(body, `"STORAGE/file"`, `"`+fs.URL+`/STORAGE/file"`)
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, body)
+		_, _ = io.WriteString(w, body)
 	})
 	fs.Server = httptest.NewTLSServer(mux)
 	t.Cleanup(fs.Close)

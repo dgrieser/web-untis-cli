@@ -195,7 +195,7 @@ func SearchSchools(ctx context.Context, query string) ([]School, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var r struct {
 		Result struct {
 			Schools []School `json:"schools"`

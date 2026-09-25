@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -125,14 +126,15 @@ func (a *app) listMessages(ctx context.Context, folder string, unread, full bool
 				continue
 			}
 			if search != "" {
-				hay := strings.ToLower(m.Subject + " " + m.ContentPreview)
+				var hay strings.Builder
+				hay.WriteString(m.Subject + " " + m.ContentPreview)
 				if m.Sender != nil {
-					hay += " " + strings.ToLower(m.Sender.DisplayName)
+					hay.WriteString(" " + m.Sender.DisplayName)
 				}
 				for _, r := range m.RecipientPersons {
-					hay += " " + strings.ToLower(r.DisplayName)
+					hay.WriteString(" " + r.DisplayName)
 				}
-				if !strings.Contains(hay, strings.ToLower(search)) {
+				if !strings.Contains(strings.ToLower(hay.String()), strings.ToLower(search)) {
 					continue
 				}
 			}
@@ -444,8 +446,7 @@ func (a *app) forwardOnce(ctx context.Context, c *webuntis.Client, folder string
 			return err
 		}
 		// oldest first so mails arrive in order
-		for i := len(list) - 1; i >= 0; i-- {
-			m := list[i]
+		for _, m := range slices.Backward(list) {
 			if !since.IsZero() && m.Sent().Before(since) {
 				continue
 			}

@@ -312,18 +312,19 @@ func Homework(student string, from, to time.Time, hw []webuntis.Homework) string
 		if !h.Completed {
 			open++
 		}
-		text := md.Esc(h.Text)
+		var text strings.Builder
+		text.WriteString(md.Esc(h.Text))
 		if h.Remark != "" {
-			text += " _(" + md.Esc(h.Remark) + ")_"
+			text.WriteString(" _(" + md.Esc(h.Remark) + ")_")
 		}
 		for _, a := range h.Attachments {
-			text += " 📎" + link(a.Name, a.URL)
+			text.WriteString(" 📎" + link(a.Name, a.URL))
 		}
 		due := dates.Human(h.DueDate)
 		if !h.Completed && h.DueDate.Before(dates.Today()) {
 			due = "**" + due + "** ⚠"
 		}
-		rows = append(rows, []string{due, md.Esc(h.Subject), text, md.Esc(shortTeacher(h.Teacher)), dates.Short(h.Date), md.Check(h.Completed)})
+		rows = append(rows, []string{due, md.Esc(h.Subject), text.String(), md.Esc(shortTeacher(h.Teacher)), dates.Short(h.Date), md.Check(h.Completed)})
 	}
 	d.Table([]string{"Fällig", "Fach", "Aufgabe", "Lehrkraft", "Erteilt", "Erledigt"}, rows)
 	d.Pf("%d Hausaufgabe(n), %d offen.", len(hw), open)
@@ -560,7 +561,7 @@ func Rows(title, subtitle string, rows []webuntis.Row, preferred []string, empty
 
 func lookup(r webuntis.Row, key string) any {
 	cur := any(r)
-	for _, part := range strings.Split(key, ".") {
+	for part := range strings.SplitSeq(key, ".") {
 		m, ok := cur.(map[string]any)
 		if !ok {
 			return nil

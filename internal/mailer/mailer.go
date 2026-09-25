@@ -137,7 +137,7 @@ func PlainBody(m *webuntis.MessageDetail, webURL string, files []webuntis.Downlo
 		if render.LooksLikeHTML(c) {
 			c = render.StripTags(c)
 		}
-		for _, line := range strings.Split(strings.TrimSpace(c), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(c), "\n") {
 			b.WriteString("> " + line + "\n")
 		}
 	}
@@ -184,7 +184,7 @@ func MarkdownBody(m *webuntis.MessageDetail, webURL string, files []webuntis.Dow
 			hf = h.Sender.DisplayName
 		}
 		fmt.Fprintf(&b, "\n---\n\n**%s**, %s\n\n", render.Esc(hf), h.Sent().Format("02.01.2006 15:04"))
-		for _, line := range strings.Split(render.Body(h.Content), "\n") {
+		for line := range strings.SplitSeq(render.Body(h.Content), "\n") {
 			b.WriteString("> " + line + "\n")
 		}
 	}

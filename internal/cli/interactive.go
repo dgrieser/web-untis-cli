@@ -157,7 +157,7 @@ func (a *app) runSetup(ctx context.Context, noStore bool) error {
 							return err
 						}
 						if slices.Contains(profiles, s) {
-							return fmt.Errorf("Profil %q existiert bereits", s)
+							return fmt.Errorf("profil %q existiert bereits", s)
 						}
 						return nil
 					}),

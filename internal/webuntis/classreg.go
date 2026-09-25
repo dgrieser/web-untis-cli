@@ -3,6 +3,7 @@ package webuntis
 import (
 	"context"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"time"
@@ -232,14 +233,7 @@ func (c *Client) Homework(ctx context.Context, studentID int, from, to time.Time
 	return out, nil
 }
 
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
+func containsInt(s []int, v int) bool { return slices.Contains(s, v) }
 
 // ---------------------------------------------------------------- class register entries
 

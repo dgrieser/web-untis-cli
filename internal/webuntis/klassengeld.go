@@ -78,7 +78,7 @@ func (c *Client) kgGet(ctx context.Context, rawURL string) (string, *url.URL, er
 	if err != nil {
 		return "", nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", nil, err
@@ -114,8 +114,7 @@ func (c *Client) Klassengeld(ctx context.Context, app *PlatformApp, withTransact
 		if _, err := c.Token(ctx); err != nil {
 			return nil, err
 		}
-		_, final, err = c.kgGet(ctx, app.RedirectURL)
-		if err != nil {
+		if _, _, err = c.kgGet(ctx, app.RedirectURL); err != nil {
 			return nil, fmt.Errorf("klassengeld SSO: %w", err)
 		}
 		body, final, err = c.kgGet(ctx, dash)
@@ -176,10 +175,8 @@ func extractKGGrids(page string) []kgGrid {
 		for _, cm := range kgCaptionRe.FindAllStringSubmatch(page[m[1]:end], -1) {
 			g.captions[cm[2]] = cm[1]
 		}
-		decl := "var " + name + " = "
-		if p := strings.Index(page, decl); p >= 0 {
-			dec := json.NewDecoder(strings.NewReader(page[p+len(decl):]))
-			_ = dec.Decode(&g.rows)
+		if _, rest, ok := strings.Cut(page, "var "+name+" = "); ok {
+			_ = json.NewDecoder(strings.NewReader(rest)).Decode(&g.rows)
 		}
 		grids = append(grids, g)
 	}
@@ -217,10 +214,7 @@ func parseKGDashboard(page string) ([]KGStudent, error) {
 	if len(headers) == 0 && len(grids) == 0 {
 		return nil, errors.New("klassengeld: could not parse dashboard (layout changed?)")
 	}
-	n := len(headers)
-	if len(grids) > n {
-		n = len(grids)
-	}
+	n := max(len(headers), len(grids))
 	var out []KGStudent
 	seenSaldo := map[string]bool{}
 	var saldoIDs []int
@@ -231,7 +225,7 @@ func parseKGDashboard(page string) ([]KGStudent, error) {
 			saldoIDs = append(saldoIDs, id)
 		}
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		var st KGStudent
 		if i < len(headers) {
 			st.Name = html.UnescapeString(headers[i][1])

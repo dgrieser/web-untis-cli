@@ -317,10 +317,7 @@ func TimetableGridPretty(tt *webuntis.Timetable, name string, color bool, width 
 		}
 		headers = append(headers, h)
 	}
-	colW := (width - 12) / max(1, len(days))
-	if colW < 10 {
-		colW = 10
-	}
+	colW := max((width-12)/max(1, len(days)), 10)
 	var rows [][]string
 	for _, s := range slots {
 		row := []string{strings.TrimSpace(s.label) + "\n" + dim.Render(s.start)}

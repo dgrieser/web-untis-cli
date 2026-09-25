@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -194,7 +195,7 @@ func (c *Client) raw(ctx context.Context, method, rawURL string, body io.Reader,
 	if err != nil {
 		return nil, nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
 	c.debugf("%s %s -> %d (%d bytes, %s)", method, redactURL(rawURL), resp.StatusCode, len(b), time.Since(start).Round(time.Millisecond))
 	return resp, b, err
@@ -352,9 +353,7 @@ func (c *Client) GetJSON(ctx context.Context, path string, query url.Values, ttl
 // Download fetches a binary resource with the session (no caching).
 func (c *Client) Download(ctx context.Context, rawURL string, headers map[string]string, authed bool) ([]byte, string, error) {
 	h := map[string]string{"Accept": "*/*"}
-	for k, v := range headers {
-		h[k] = v
-	}
+	maps.Copy(h, headers)
 	if authed {
 		tok, err := c.Token(ctx)
 		if err != nil {
