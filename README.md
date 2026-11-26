@@ -81,6 +81,21 @@ webuntis tt next-week -o pdf --file stundenplan.pdf   # without --file: stdout w
 `--regular` shows the regular timetable (Regelstundenplan) without changes: cancelled lessons take place,
 substitute teachers and rooms are replaced by the original ones, and additional lessons, exams and events
 are left out. It works with every output format, e.g. `webuntis tt --regular -o pdf` for a plan to put on the wall.
+The plan is reconstructed from the week of DATE and the 4 weeks before and after it (`--scan-weeks N`):
+
+- **Source:** the base timetable (Basisstundenplan, JSON-RPC `getTimetable` with `onlyBaseTimetable`) is used
+  if the account may read it; otherwise the timetable view with all changes removed. `--regular-source base|derived`
+  forces one.
+- **Baseline:** the requested week is authoritative: its lessons are never replaced, even if other weeks differ.
+- **Gaps:** holidays, lessons missing in the week and afternoon lessons are filled from other weeks, but only from
+  weeks whose lessons overlay the week exactly.
+- **Plan changes:** a lesson that is replaced, moved or dropped in two consecutive weeks marks a different timetable
+  (Stundenplanwechsel); those weeks and all weeks beyond them are ignored.
+- **A/B weeks:** an alternating rhythm is detected and printed as two weeks (two pages in html/pdf). The other week
+  (and a requested week without lessons) is built period by period from what most of its weeks have.
+  With `--day`/`--days` the matching week is used for every date.
+
+On a terminal it reports which weeks were used; `-o json` contains the weeks and these notes.
 
 **Dates:** `2026-09-21`, `21.09.`, `today`, `morgen`, `monday`, `+1w`, `next-week`.
 

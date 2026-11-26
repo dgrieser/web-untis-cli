@@ -10,6 +10,7 @@ import (
 
 	ics "github.com/arran4/golang-ical"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/dgrieser/web-untis-cli/internal/dates"
 	"github.com/dgrieser/web-untis-cli/internal/render"
@@ -178,7 +179,8 @@ const ownClass = "@own"
 func (a *app) timetableCmd() *cobra.Command {
 	var date, class, resType, resName, outFile, pdfEngine string
 	var day, grid, list, next, regular, noNotes bool
-	var days int
+	var days, scanWeeks int
+	var regularSource string
 	cmd := &cobra.Command{
 		Use:     "timetable [DATE]",
 		Aliases: []string{"tt", "stundenplan"},
@@ -192,6 +194,14 @@ Pretty output is a colored week grid; --list shows one table per day.
 --regular shows the regular timetable (Regelstundenplan) without changes:
 cancelled lessons take place, substitute teachers and rooms are replaced
 by the original ones, additional lessons, exams and events are left out.
+It is reconstructed from the week of DATE and --scan-weeks weeks before and
+after it: holidays and other gaps (e.g. afternoon lessons) are filled from
+weeks whose lessons overlay the week exactly, weeks of a different
+timetable (Stundenplanwechsel) are ignored, and an A/B rhythm is detected
+and printed as two weeks (two pages). The weeks come from the base
+timetable (JSON-RPC getTimetable with onlyBaseTimetable) if the account may
+read it, else from the timetable with the changes removed
+(--regular-source base|derived forces one).
 Use -o ics to export as calendar (e.g. for subscriptions via cron).
 
 -o html writes a standalone page for the browser or printing (a week fits
@@ -268,38 +278,79 @@ skip with --no-notes).`,
 				q.ResourceType, q.ResourceID, q.TimetableType = "STUDENT", st.ID, "MY_TIMETABLE"
 				name = st.Name
 			}
-			tt, err := c.Timetable(ctx, q)
-			if err != nil {
-				return err
-			}
-			// --regular drops the week's notes, so don't fetch them.
-			if (a.format == render.JSON || a.format == render.YAML) && !noNotes && !regular {
-				if err := c.AddLessonDetails(ctx, tt); err != nil {
-					fmt.Fprintln(os.Stderr, "Warning: lesson notes unavailable:", err)
+			fullName := func(tt *webuntis.Timetable) {
+				if q.ResourceType == "STUDENT" {
+					// The API only returns the surname; use the full student name.
+					tt.Resource.LongName = firstNonEmpty(name, tt.Resource.LongName, tt.Resource.DisplayName, tt.Resource.ShortName)
 				}
 			}
-			if q.ResourceType == "STUDENT" {
-				// The API only returns the surname; use the full student name.
-				tt.Resource.LongName = firstNonEmpty(name, tt.Resource.LongName, tt.Resource.DisplayName, tt.Resource.ShortName)
-				name = ""
-			}
+			var tt *webuntis.Timetable      // shown as a whole (json, yaml, ics)
+			var pages []*webuntis.Timetable // shown one after another (A and B week)
+			var data any
 			if regular {
-				tt = tt.WithoutChanges()
+				rq := q
+				rq.Start = dates.Monday(start)
+				rq.End = rq.Start.AddDate(0, 0, 4)
+				plan, err := c.RegularPlan(ctx, rq, webuntis.RegularOptions{WeeksBefore: scanWeeks, WeeksAfter: scanWeeks, Source: regularSource})
+				if err != nil {
+					return err
+				}
+				for _, w := range plan.Weeks {
+					fullName(w)
+				}
+				if day || days > 0 {
+					tt = plan.Project(start, end)
+					pages = []*webuntis.Timetable{tt}
+					plan.Weeks = pages
+				} else {
+					// Dated like the requested week, even if another week
+					// served as template.
+					pages = plan.Pages(start)
+					plan.Weeks = pages
+					tt = plan.Project(pages[0].Start, pages[len(pages)-1].End)
+				}
+				data = plan
+				printPlanNotes(plan)
+			} else {
+				var err error
+				if tt, err = c.Timetable(ctx, q); err != nil {
+					return err
+				}
+				if (a.format == render.JSON || a.format == render.YAML) && !noNotes {
+					if err := c.AddLessonDetails(ctx, tt); err != nil {
+						fmt.Fprintln(os.Stderr, "Warning: lesson notes unavailable:", err)
+					}
+				}
+				fullName(tt)
+				pages = []*webuntis.Timetable{tt}
+				data = tt
+			}
+			if q.ResourceType == "STUDENT" {
+				name = ""
 			}
 			useGrid := !list && !day && (grid || end.Sub(start) <= 7*24*time.Hour)
 			cal := func() *ics.Calendar { return views.TimetableICS(tt, c.Profile.School) }
 			if a.format == render.HTMLPage || a.format == render.PDF {
-				return a.timetableDocument(ctx, tt, name, useGrid, start, outFile, pdfEngine)
+				return a.timetableDocument(ctx, pages, name, useGrid, start, outFile, pdfEngine)
 			}
 			if a.format == render.Pretty && useGrid {
 				r := a.renderer()
-				return r.Raw(views.TimetableGridPretty(tt, name, r.Color(), r.Width))
-			}
-			return a.emit(tt, func() string {
-				if useGrid {
-					return views.TimetableGridMD(tt, name)
+				var out strings.Builder
+				for _, p := range pages {
+					out.WriteString(views.TimetableGridPretty(p, name, r.Color(), r.Width))
 				}
-				return views.TimetableList(tt, name)
+				return r.Raw(out.String())
+			}
+			return a.emit(data, func() string {
+				var out []string
+				for _, p := range pages {
+					if useGrid {
+						out = append(out, views.TimetableGridMD(p, name))
+					} else {
+						out = append(out, views.TimetableList(p, name))
+					}
+				}
+				return strings.Join(out, "\n")
 			}, cal)
 		},
 	}
@@ -311,6 +362,9 @@ skip with --no-notes).`,
 	f.BoolVarP(&grid, "grid", "g", false, "force grid view")
 	f.BoolVarP(&list, "list", "l", false, "list view (one table per day)")
 	f.BoolVar(&regular, "regular", false, "regular timetable without changes (no cancellations, substitutions, extra lessons)")
+	f.IntVar(&scanWeeks, "scan-weeks", 4, "--regular: weeks before and after DATE to compare for gaps, A/B weeks and plan changes")
+	f.StringVar(&regularSource, "regular-source", webuntis.SourceAuto, "--regular: base (base timetable via JSON-RPC), derived (from the timetable with changes) or auto")
+	_ = cmd.RegisterFlagCompletionFunc("regular-source", staticCompletion(webuntis.SourceAuto, webuntis.SourceBase, webuntis.SourceDerived))
 	f.StringVarP(&class, "class", "c", "", "show a class timetable (default: the student's class)")
 	f.Lookup("class").NoOptDefVal = ownClass
 	f.StringVar(&resType, "resource-type", "", "other timetable type: TEACHER, ROOM, SUBJECT, STUDENT (if permitted)")
@@ -323,7 +377,7 @@ skip with --no-notes).`,
 }
 
 // timetableDocument writes the timetable as HTML or PDF.
-func (a *app) timetableDocument(ctx context.Context, tt *webuntis.Timetable, name string, grid bool, start time.Time, outFile, engine string) error {
+func (a *app) timetableDocument(ctx context.Context, tt []*webuntis.Timetable, name string, grid bool, start time.Time, outFile, engine string) error {
 	if a.format == render.HTMLPage {
 		page, err := views.TimetableHTML(tt, name, grid)
 		if err != nil {
@@ -357,7 +411,7 @@ func (a *app) timetableDocument(ctx context.Context, tt *webuntis.Timetable, nam
 
 // timetablePDF renders the PDF with a headless browser (best fidelity) or
 // the built-in renderer, which works without any browser.
-func timetablePDF(ctx context.Context, tt *webuntis.Timetable, name string, grid bool, engine string) ([]byte, error) {
+func timetablePDF(ctx context.Context, tt []*webuntis.Timetable, name string, grid bool, engine string) ([]byte, error) {
 	switch strings.ToLower(engine) {
 	case "native":
 		return views.TimetablePDF(tt, name, grid)
@@ -374,4 +428,19 @@ func timetablePDF(ctx context.Context, tt *webuntis.Timetable, name string, grid
 		return nil, err
 	}
 	return render.HTMLToPDF(ctx, page)
+}
+
+// printPlanNotes tells on a terminal how the regular plan was built.
+func printPlanNotes(plan *webuntis.RegularPlan) {
+	if !term.IsTerminal(int(os.Stderr.Fd())) {
+		return
+	}
+	src := "Basisstundenplan (JSON-RPC)"
+	if plan.Source == webuntis.SourceDerived {
+		src = "Stundenplan ohne Änderungen"
+	}
+	fmt.Fprintln(os.Stderr, "Regelstundenplan aus "+src)
+	for _, n := range plan.Notes {
+		fmt.Fprintln(os.Stderr, "  · "+n)
+	}
 }

@@ -114,6 +114,8 @@ func newFakeServer(t *testing.T) *fakeServer {
 			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":{"sessionId":"SESSION1","personType":12,"personId":8243}}`)
 		case "getLatestImportTime":
 			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":1790254884684}`)
+		case "getTimetable":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":"1","result":%s}`, baseTimetableFixture(req.Params))
 		default:
 			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":"1","result":null}`)
 		}
@@ -531,4 +533,45 @@ func TestLatestImportTime(t *testing.T) {
 	if err != nil || it.Year() != 2026 {
 		t.Fatalf("import time: %v %v", err, it)
 	}
+}
+
+// baseTimetableFixture answers getTimetable with onlyBaseTimetable: every
+// week Monday D (double period) and M, Tuesday E. In the week of
+// 2026-09-21 Tuesday is a holiday and a substitution is left in.
+func baseTimetableFixture(params map[string]any) string {
+	opt, _ := params["options"].(map[string]any)
+	if opt == nil || opt["onlyBaseTimetable"] != true {
+		return "[]"
+	}
+	el, _ := opt["element"].(map[string]any)
+	if el["type"] != float64(5) || el["id"] != float64(8685) {
+		return "[]"
+	}
+	start, _ := time.ParseInLocation("20060102", fmt.Sprint(int(opt["startDate"].(float64))), time.Local)
+	end, _ := time.ParseInLocation("20060102", fmt.Sprint(int(opt["endDate"].(float64))), time.Local)
+	var out []string
+	id := 0
+	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+		date := d.Format("20060102")
+		p := func(from, to int, su, te string) {
+			id++
+			out = append(out, fmt.Sprintf(`{"id":%d,"date":%s,"startTime":%d,"endTime":%d,"kl":[{"id":1,"name":"6c"}],"te":[%s],"su":[{"id":2,"name":"%s"}],"ro":[{"id":3,"name":"D104"}],"lstype":"ls"}`,
+				id, date, from, to, te, su))
+		}
+		switch d.Weekday() {
+		case time.Monday:
+			te := `{"id":10,"name":"LER"}`
+			if date == "20260921" {
+				te = `{"id":11,"name":"VER","orgid":10}`
+			}
+			p(745, 830, "D", te)
+			p(835, 920, "D", te)
+			p(940, 1025, "M", `{"id":12,"name":"KRA"}`)
+		case time.Tuesday:
+			if date != "20260922" {
+				p(745, 830, "E", `{"id":13,"name":"ALB"}`)
+			}
+		}
+	}
+	return "[" + strings.Join(out, ",") + "]"
 }

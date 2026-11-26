@@ -168,7 +168,7 @@ func fullWeek() *webuntis.Timetable {
 
 func TestTimetableHTML(t *testing.T) {
 	tt := fullWeek()
-	page, err := TimetableHTML(tt, "", true)
+	page, err := TimetableHTML([]*webuntis.Timetable{tt}, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +181,7 @@ func TestTimetableHTML(t *testing.T) {
 	if strings.Contains(page, "<Schulhof>") {
 		t.Error("unescaped text in html")
 	}
-	list, err := TimetableHTML(sampleTimetable(), "", false)
+	list, err := TimetableHTML([]*webuntis.Timetable{sampleTimetable()}, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestTimetablePDF(t *testing.T) {
 		if !grid {
 			tt = sampleTimetable()
 		}
-		b, err := TimetablePDF(tt, "", grid)
+		b, err := TimetablePDF([]*webuntis.Timetable{tt}, "", grid)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -217,7 +217,7 @@ func TestTimetablePDF(t *testing.T) {
 
 func TestTimetableRegular(t *testing.T) {
 	tt := fullWeek().WithoutChanges()
-	page, err := TimetableHTML(tt, "", true)
+	page, err := TimetableHTML([]*webuntis.Timetable{tt}, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,12 +232,43 @@ func TestTimetableRegular(t *testing.T) {
 	if strings.Contains(TimetableGridMD(tt, ""), "= Änderung") {
 		t.Error("markdown legend shown for regular timetable")
 	}
-	b, err := TimetablePDF(tt, "", true)
+	b, err := TimetablePDF([]*webuntis.Timetable{tt}, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if dir := os.Getenv("HTML_OUT"); dir != "" {
 		_ = os.WriteFile(dir+"/regular.pdf", b, 0o644)
 		_ = os.WriteFile(dir+"/regular.html", []byte(page), 0o644)
+	}
+}
+
+func TestTimetableRegularAlternating(t *testing.T) {
+	a := fullWeek().WithoutChanges()
+	a.WeekLabel = "Woche A"
+	b := fullWeek().WithoutChanges()
+	b.WeekLabel = "Woche B"
+	b.Start, b.End = b.Start.AddDate(0, 0, 7), b.End.AddDate(0, 0, 7)
+	page, err := TimetableHTML([]*webuntis.Timetable{a, b}, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(page, `<main class="page">`); n != 2 {
+		t.Errorf("want two pages, got %d", n)
+	}
+	for _, want := range []string{"Regelstundenplan Woche A · wie KW 39", "Regelstundenplan Woche B · wie KW 40", "break-before: page"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("html missing %q", want)
+		}
+	}
+	pdf, err := TimetablePDF([]*webuntis.Timetable{a, b}, "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := bytes.Count(pdf, []byte("/Type /Page\n")); n != 2 {
+		t.Errorf("want a two-page PDF, got %d pages", n)
+	}
+	if dir := os.Getenv("HTML_OUT"); dir != "" {
+		_ = os.WriteFile(dir+"/regular-ab.pdf", pdf, 0o644)
+		_ = os.WriteFile(dir+"/regular-ab.html", []byte(page), 0o644)
 	}
 }
