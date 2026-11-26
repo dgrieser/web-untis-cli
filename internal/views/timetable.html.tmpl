@@ -40,6 +40,7 @@ body {
   box-shadow: 0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.08);
 }
 .list .page { max-width: 980px; }
+.page + .page { break-before: page; page-break-before: always; }
 header {
   display: flex;
   align-items: flex-end;
@@ -255,6 +256,7 @@ td.info { color: #475467; font-size: 12px; }
 </style>
 </head>
 <body class="{{if .Grid}}grid-page{{else}}list{{end}}">
+{{- range .Pages}}
 <main class="page">
   <header>
     <div>
@@ -330,8 +332,9 @@ td.info { color: #475467; font-size: 12px; }
     {{- end}}
   </section>
   {{- end}}
-  <footer>{{if not .Regular}}<span class="key"><span class="swatch changed"></span>Änderung</span><span class="key"><span class="swatch cancelled"></span>Entfall</span>{{end}}<span class="brand">webuntis-cli</span></footer>
+  <footer>{{if not $.Regular}}<span class="key"><span class="swatch changed"></span>Änderung</span><span class="key"><span class="swatch cancelled"></span>Entfall</span>{{end}}<span class="brand">webuntis-cli</span></footer>
 {{- end}}
 </main>
+{{- end}}
 </body>
 </html>

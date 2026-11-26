@@ -87,6 +87,9 @@ func ttTitle(tt *webuntis.Timetable) string {
 }
 
 func rangeLabel(tt *webuntis.Timetable) string {
+	if tt.Regular && tt.WeekLabel != "" {
+		return "Regelstundenplan " + tt.WeekLabel + " · wie " + dateRangeLabel(tt)
+	}
 	if tt.Regular {
 		return dateRangeLabel(tt) + " · Regelstundenplan (ohne Änderungen)"
 	}

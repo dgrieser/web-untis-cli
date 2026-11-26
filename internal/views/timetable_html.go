@@ -2,6 +2,7 @@ package views
 
 import (
 	_ "embed"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"html/template"
@@ -98,12 +99,34 @@ type htmlDay struct {
 	Lessons []htmlLesson
 }
 
+// htmlDoc is the HTML document: one or more pages (e.g. A and B week).
+type htmlDoc struct {
+	Title, Subtitle string
+	Grid, Regular   bool
+	Pages           []htmlPage
+}
+
 // TimetableHTML renders the timetable as a standalone, printable HTML page:
 // a week grid (one A4 landscape page) or, with grid=false, one table per day.
-func TimetableHTML(tt *webuntis.Timetable, name string, grid bool) (string, error) {
-	p := buildPage(tt, name, grid)
+// Several timetables (e.g. the A and B week of a regular plan) are printed
+// on separate pages.
+func TimetableHTML(tts []*webuntis.Timetable, name string, grid bool) (string, error) {
+	doc := htmlDoc{Grid: grid}
+	for _, tt := range tts {
+		p := buildPage(tt, name, grid)
+		doc.Pages = append(doc.Pages, p)
+		doc.Regular = doc.Regular || p.Regular
+	}
+	if len(doc.Pages) == 0 {
+		return "", errors.New("no timetable")
+	}
+	doc.Title = doc.Pages[0].Title
+	doc.Subtitle = doc.Pages[0].Subtitle
+	if len(doc.Pages) > 1 && doc.Regular {
+		doc.Subtitle = "Regelstundenplan"
+	}
 	var b strings.Builder
-	if err := timetableTmpl.Execute(&b, p); err != nil {
+	if err := timetableTmpl.Execute(&b, doc); err != nil {
 		return "", err
 	}
 	return b.String(), nil

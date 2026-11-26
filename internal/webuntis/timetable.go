@@ -238,6 +238,8 @@ type Timetable struct {
 	TimeGrid     []TimeUnit     `json:"timeGrid,omitempty" yaml:"timeGrid,omitempty"`
 	// Regular is set by WithoutChanges(): changes have been removed.
 	Regular bool `json:"regular,omitempty" yaml:"regular,omitempty"`
+	// WeekLabel names the week of an alternating regular plan ("Woche A").
+	WeekLabel string `json:"weekLabel,omitempty" yaml:"weekLabel,omitempty"`
 }
 
 // WithoutChanges returns the regular timetable (Regelstundenplan) without changes:

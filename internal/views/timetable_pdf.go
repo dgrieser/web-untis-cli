@@ -3,6 +3,7 @@ package views
 import (
 	"bytes"
 	_ "embed"
+	"errors"
 	"math"
 	"slices"
 	"strconv"
@@ -450,9 +451,12 @@ func (d *pdfDoc) lessonCard(x, y, w, h float64, l htmlLesson, base float64, mult
 
 // TimetablePDF renders the timetable as PDF without a browser: the week
 // grid on one A4 landscape page, the list view on A4 portrait pages. The
-// layout follows the HTML page of TimetableHTML.
-func TimetablePDF(tt *webuntis.Timetable, name string, grid bool) ([]byte, error) {
-	p := buildPage(tt, name, grid)
+// layout follows the HTML page of TimetableHTML. Several timetables (e.g.
+// the A and B week of a regular plan) start on a new page each.
+func TimetablePDF(tts []*webuntis.Timetable, name string, grid bool) ([]byte, error) {
+	if len(tts) == 0 {
+		return nil, errors.New("no timetable")
+	}
 	orient, w, h, m := "P", 210.0, 297.0, 12.0
 	if grid {
 		orient, w, h, m = "L", 297.0, 210.0, 8.0
@@ -460,17 +464,26 @@ func TimetablePDF(tt *webuntis.Timetable, name string, grid bool) ([]byte, error
 	f := fpdf.New(orient, "mm", "A4", "")
 	f.AddUTF8FontFromBytes("inter", "", interRegular)
 	f.AddUTF8FontFromBytes("inter", "B", interBold)
-	f.SetTitle(p.Title+" · "+p.Subtitle, true)
 	f.SetCreator("webuntis-cli", true)
 	f.SetCreationDate(time.Now())
 	f.SetMargins(m, m, m)
 	f.SetAutoPageBreak(false, m)
-	f.AddPage()
 	d := &pdfDoc{Fpdf: f, w: w, h: h, m: m}
-	if grid {
-		d.gridPage(p)
-	} else {
-		d.listPages(p)
+	for i, tt := range tts {
+		p := buildPage(tt, name, grid)
+		if i == 0 {
+			title := p.Title + " · " + p.Subtitle
+			if len(tts) > 1 && p.Regular {
+				title = p.Title + " · Regelstundenplan"
+			}
+			f.SetTitle(title, true)
+		}
+		f.AddPage()
+		if grid {
+			d.gridPage(p)
+		} else {
+			d.listPages(p)
+		}
 	}
 	var b bytes.Buffer
 	if err := f.Output(&b); err != nil {
