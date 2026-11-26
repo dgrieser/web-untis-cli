@@ -126,10 +126,45 @@ func (c *Client) RegularPlan(ctx context.Context, q TimetableQuery, opt RegularO
 			ks = append(ks, k)
 		}
 	}
-	plan := BuildRegularPlan(list, ks)
+	plan := BuildRegularPlan(list, ks, c.schoolDays(ctx))
 	plan.Source = source
 	plan.Notes = append(notes, plan.Notes...)
 	return plan, nil
+}
+
+// schoolDays returns a function telling school days (Monday to Friday, not
+// in the holidays of the school year), or nil if the holiday calendar is
+// not available.
+func (c *Client) schoolDays(ctx context.Context) func(time.Time) bool {
+	ad, err := c.AppData(ctx)
+	if err != nil || len(ad.Holidays) == 0 {
+		return nil
+	}
+	type span struct{ from, to time.Time }
+	var hs []span
+	for _, h := range ad.Holidays {
+		from, err1 := dates.ParseLocalDateTime(firstNonEmpty(h.StartDate, h.Start))
+		to, err2 := dates.ParseLocalDateTime(firstNonEmpty(h.EndDate, h.End))
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		hs = append(hs, span{dates.Day(from), dates.Day(to)})
+	}
+	if len(hs) == 0 {
+		return nil
+	}
+	return func(d time.Time) bool {
+		if d.Weekday() == time.Saturday || d.Weekday() == time.Sunday {
+			return false
+		}
+		d = dates.Day(d)
+		for _, h := range hs {
+			if !d.Before(h.from) && !d.After(h.to) {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 // BaseTimetable fetches the base timetable (Basisstundenplan, without
@@ -337,6 +372,9 @@ type piece struct {
 type planDay struct {
 	date  time.Time
 	slots map[string][]piece
+	// free: a school day without lessons (known to be free, unlike a day
+	// without data or a holiday)
+	free bool
 }
 
 type planWeek struct {
@@ -353,7 +391,12 @@ func at(day time.Time, minutes int) time.Time {
 	return time.Date(day.Year(), day.Month(), day.Day(), minutes/60, minutes%60, 0, 0, day.Location())
 }
 
-func newPlanWeek(k int, tt *Timetable) *planWeek {
+// newPlanWeek splits the lessons of tt into slots. schoolDay (may be nil)
+// tells school days from holidays: a weekday without lessons is a known free
+// day only if it is a school day by the holiday calendar, its status is
+// regular, and the week has lessons on another day (a week without any
+// lessons is no data, e.g. not published yet).
+func newPlanWeek(k int, tt *Timetable, schoolDay func(time.Time) bool) *planWeek {
 	w := &planWeek{k: k, tt: tt}
 	for _, d := range tt.Days {
 		pd := &planDay{date: dates.Day(d.Date), slots: map[string][]piece{}}
@@ -397,14 +440,28 @@ func newPlanWeek(k int, tt *Timetable) *planWeek {
 		}
 		w.days[weekdayIndex(d.Date)] = pd
 	}
+	if schoolDay != nil && w.hasData() {
+		for _, d := range tt.Days {
+			wd := weekdayIndex(d.Date)
+			pd := w.days[wd]
+			if wd < 5 && len(pd.slots) == 0 && (d.Status == "" || d.Status == "REGULAR") && schoolDay(dates.Day(d.Date)) {
+				pd.free = true
+			}
+		}
+	}
 	return w
 }
 
-func (w *planWeek) known(wd int) bool { return w.days[wd] != nil && len(w.days[wd].slots) > 0 }
+// known reports whether the content of the day is known: it has lessons
+// or is a known free day.
+func (w *planWeek) known(wd int) bool { return w.lessons(wd) || w.days[wd] != nil && w.days[wd].free }
+
+// lessons reports whether the day has lessons.
+func (w *planWeek) lessons(wd int) bool { return w.days[wd] != nil && len(w.days[wd].slots) > 0 }
 
 func (w *planWeek) hasData() bool {
 	for wd := range w.days {
-		if w.known(wd) {
+		if w.lessons(wd) {
 			return true
 		}
 	}
@@ -534,12 +591,16 @@ func weekList(ws []*planWeek) string {
 //     authoritative for its lessons and its free periods are filled from
 //     weeks that overlay it exactly; without target week (B week, holiday)
 //     each slot gets what the majority of the weeks has there.
-func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
+//
+// schoolDay (may be nil) tells school days from holidays, so that a
+// regularly free weekday (e.g. of a part-time teacher) counts as free and
+// not as missing data.
+func BuildRegularPlan(tts []*Timetable, ks []int, schoolDay func(time.Time) bool) *RegularPlan {
 	plan := &RegularPlan{}
 	var weeks []*planWeek
 	var target *planWeek
 	for i, tt := range tts {
-		w := newPlanWeek(ks[i], tt)
+		w := newPlanWeek(ks[i], tt, schoolDay)
 		weeks = append(weeks, w)
 		if w.k == 0 {
 			target = w
@@ -565,39 +626,49 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		return plan
 	}
 
-	rhythm := alternates(weeks)
-	class := func(w *planWeek) int {
-		if rhythm && odd(w.k) {
-			return 1
+	// The rhythm decides which weeks are compared when looking for plan
+	// changes, and weeks of another timetable may hide the rhythm. So:
+	// rhythm of all weeks, era, rhythm of the era, and if that differs,
+	// the era once more with the rhythm of the era.
+	findEra := func(rhythm bool) (era, other []*planWeek) {
+		class := func(w *planWeek) int {
+			if rhythm && odd(w.k) {
+				return 1
+			}
+			return 0
 		}
-		return 0
-	}
-	era := []*planWeek{anchor}
-	var other []*planWeek
-	for _, dir := range []int{-1, 1} {
-		var side []*planWeek // ordered away from the anchor
-		for i := range weeks {
-			w := weeks[i]
-			if dir < 0 {
-				w = weeks[len(weeks)-1-i]
-			}
-			if (w.k-anchor.k)*dir > 0 {
-				side = append(side, w)
-			}
-		}
-		broken := false
-		for i, w := range side {
-			if !broken && w.hasData() && startsNewPlan(w, side[i+1:], era, class) {
-				broken = true
-			}
-			if broken {
-				if w.hasData() {
-					other = append(other, w)
+		era = []*planWeek{anchor}
+		for _, dir := range []int{-1, 1} {
+			var side []*planWeek // ordered away from the anchor
+			for i := range weeks {
+				w := weeks[i]
+				if dir < 0 {
+					w = weeks[len(weeks)-1-i]
 				}
-				continue
+				if (w.k-anchor.k)*dir > 0 {
+					side = append(side, w)
+				}
 			}
-			era = append(era, w)
+			broken := false
+			for i, w := range side {
+				if !broken && w.hasData() && startsNewPlan(w, side[i+1:], era, class) {
+					broken = true
+				}
+				if broken {
+					if w.hasData() {
+						other = append(other, w)
+					}
+					continue
+				}
+				era = append(era, w)
+			}
 		}
+		return era, other
+	}
+	rhythm := alternates(weeks)
+	era, other := findEra(rhythm)
+	if r := alternates(era); r != rhythm {
+		era, other = findEra(r)
 	}
 	sortWeeks(era)
 	sortWeeks(other)
@@ -605,7 +676,7 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		plan.Notes = append(plan.Notes, "Anderer Stundenplan (Planwechsel), nicht verwendet: "+weekList(other))
 	}
 
-	plan.Alternating = rhythm && alternates(era)
+	plan.Alternating = alternates(era)
 	groups := [][]*planWeek{era}
 	if plan.Alternating {
 		var even, oddW []*planWeek
@@ -648,7 +719,7 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		tt, src := compose(base, voters)
 		if base == nil {
 			// Majority weeks: report the ones that were outvoted somewhere.
-			res := newPlanWeek(0, tt)
+			res := newPlanWeek(0, tt, schoolDay)
 			var kept []*planWeek
 			for _, w := range voters {
 				if c := compare(res, w); c.conflicts > 0 || c.presence > 0 {
@@ -669,6 +740,35 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 			tt.WeekLabel = "Woche " + string(rune('A'+gi))
 		}
 		plan.Weeks = append(plan.Weeks, tt)
+	}
+	// Free weekdays in the result can't always be told from holidays.
+	var freeDays []string
+	for _, tt := range plan.Weeks {
+		for _, d := range tt.Days {
+			if wd := weekdayIndex(d.Date); wd < 5 && len(d.Lessons) == 0 {
+				label := dates.WeekdayShort(d.Date)
+				if tt.WeekLabel != "" {
+					label += " (" + tt.WeekLabel + ")"
+				}
+				freeDays = append(freeDays, label)
+			}
+		}
+	}
+	if len(freeDays) > 0 {
+		plan.Notes = append(plan.Notes, "Ohne Unterricht im Regelplan: "+strings.Join(freeDays, ", "))
+	}
+	if schoolDay == nil {
+		var unsure []string
+		for _, w := range era {
+			for wd := range 5 {
+				if w.hasData() && w.days[wd] != nil && !w.lessons(wd) {
+					unsure = append(unsure, fmt.Sprintf("%s KW %d", dates.WeekdayShort(w.days[wd].date), w.week()))
+				}
+			}
+		}
+		if len(unsure) > 0 {
+			plan.Notes = append(plan.Notes, "Ferienkalender nicht verfügbar, Tage ohne Unterricht als Ferien gewertet (könnten regulär frei sein): "+strings.Join(unsure, ", "))
+		}
 	}
 	sortWeeks(used)
 	sortWeeks(voted)
@@ -703,19 +803,21 @@ func sortWeeks(ws []*planWeek) {
 //     two era weeks, as a single week (the target week) may just lack the
 //     lesson; then it is a gap to fill, not a plan change.
 func startsNewPlan(w *planWeek, next []*planWeek, era []*planWeek, class func(*planWeek) int) bool {
+	// Only days with lessons count: a whole free day may as well be an
+	// unlisted holiday.
 	for wd := range 7 {
-		if !w.known(wd) {
+		if !w.lessons(wd) {
 			continue
 		}
 		var prev []*planWeek
 		for _, e := range era {
-			if class(e) == class(w) && e.known(wd) {
+			if class(e) == class(w) && e.lessons(wd) {
 				prev = append(prev, e)
 			}
 		}
 		var confirm *planWeek
 		for _, n := range next {
-			if class(n) == class(w) && n.known(wd) {
+			if class(n) == class(w) && n.lessons(wd) {
 				confirm = n
 				break
 			}
@@ -812,7 +914,7 @@ func compose(base *planWeek, voters []*planWeek) (*Timetable, map[*planWeek]int)
 	out.Days = nil
 	src := map[*planWeek]int{}
 	knows := func(wd int) bool {
-		return base != nil && base.known(wd) || slices.ContainsFunc(voters, func(f *planWeek) bool { return f.known(wd) })
+		return base != nil && base.lessons(wd) || slices.ContainsFunc(voters, func(f *planWeek) bool { return f.lessons(wd) })
 	}
 	// Every weekday Monday to Friday (and the weekend if any week has
 	// lessons then), even if the API left a day out.

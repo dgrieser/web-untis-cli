@@ -87,7 +87,7 @@ func build(weeks map[int]*Timetable) *RegularPlan {
 			ks = append(ks, k)
 		}
 	}
-	return BuildRegularPlan(tts, ks)
+	return BuildRegularPlan(tts, ks, nil)
 }
 
 func TestRegularPlanFillsGaps(t *testing.T) {
@@ -286,7 +286,7 @@ func TestRegularPlanKeepsTimesOutsideGrid(t *testing.T) {
 		Lesson{IDs: []int{90}, Start: hhmm(d, 1300), End: hhmm(d, 1350), Subjects: []Element{{Name: "AG"}}},
 		Lesson{IDs: []int{91}, Start: hhmm(d, 1530), End: hhmm(d, 1615), Subjects: []Element{{Name: "CH"}}})
 	tt.Days[0].Lessons[0].Start = hhmm(d, 740)
-	plan := BuildRegularPlan([]*Timetable{tt}, []int{0})
+	plan := BuildRegularPlan([]*Timetable{tt}, []int{0}, nil)
 	if got := dayString(plan.Weeks[0], 0); got != "07:40-08:30 D, 08:35-09:20 D, 13:00-13:50 AG, 15:30-16:15 CH" &&
 		got != "07:40-09:20 D, 13:00-13:50 AG, 15:30-16:15 CH" {
 		t.Errorf("lesson times changed: %s", got)
@@ -297,7 +297,7 @@ func TestRegularPlanKeepsTimesOutsideGrid(t *testing.T) {
 func TestRegularPlanMissingWeekday(t *testing.T) {
 	base := week(0, full(nil))
 	base.Days = append(base.Days[:1:1], base.Days[2:]...) // no Tuesday at all
-	plan := BuildRegularPlan([]*Timetable{week(-1, full(nil)), base, week(1, full(nil))}, []int{-1, 0, 1})
+	plan := BuildRegularPlan([]*Timetable{week(-1, full(nil)), base, week(1, full(nil))}, []int{-1, 0, 1}, nil)
 	w := plan.Weeks[0]
 	if len(w.Days) != 5 || w.Days[1].Date.Day() != 24 {
 		t.Fatalf("days: %d", len(w.Days))
@@ -394,5 +394,76 @@ func TestRegularPlanNewPlanInTargetWeek(t *testing.T) {
 	}
 	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Planwechsel), nicht verwendet: KW 44, 45, 46, 47") {
 		t.Errorf("notes: %s", notes)
+	}
+}
+
+// Review finding: weeks of a new timetable must not hide the A/B rhythm of
+// the current one.
+func TestRegularPlanRhythmBeforePlanChange(t *testing.T) {
+	a := full(nil)
+	b := without(full(nil), 2, "3:GE")
+	b[2] = append(b[2], "3:EK")
+	c := without(full(nil), 2, "3:GE")
+	c[2] = append(c[2], "3:CH")
+	plan := build(map[int]*Timetable{
+		-4: week(-4, a), -3: week(-3, b), -2: week(-2, a), -1: week(-1, b), 0: week(0, a),
+		1: week(1, c), 2: week(2, c), 3: week(3, c), 4: week(4, c),
+	})
+	if !plan.Alternating || len(plan.Weeks) != 2 {
+		t.Fatalf("A/B rhythm lost: %v", plan.Notes)
+	}
+	if got := dayString(plan.Weeks[1], 2); !strings.Contains(got, "EK") || strings.Contains(got, "CH") {
+		t.Errorf("B week: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Planwechsel), nicht verwendet: KW 49, 50, 51, 52") {
+		t.Errorf("notes: %s", notes)
+	}
+}
+
+// Review finding: a regularly free weekday (Friday in B weeks, e.g. a
+// part-time teacher) is free, not missing data; holidays by the calendar
+// and unpublished weeks still are missing data.
+func TestRegularPlanFreeWeekday(t *testing.T) {
+	a := full(nil)
+	b := without(full(nil), 4)
+	holiday := time.Date(2026, 11, 27, 0, 0, 0, 0, time.Local) // Friday of the target week
+	schoolDay := func(d time.Time) bool {
+		return d.Weekday() != time.Saturday && d.Weekday() != time.Sunday && !d.Equal(holiday)
+	}
+	var tts []*Timetable
+	var ks []int
+	for k := -4; k <= 4; k++ {
+		spec := a
+		switch {
+		case k >= 3:
+			spec = map[int][]string{} // not published yet
+		case k == 0:
+			spec = without(a, 4)
+		case odd(k):
+			spec = b
+		}
+		tts, ks = append(tts, week(k, spec)), append(ks, k)
+	}
+	plan := BuildRegularPlan(tts, ks, schoolDay)
+	if !plan.Alternating || len(plan.Weeks) != 2 {
+		t.Fatalf("A/B rhythm of the free Friday not detected: %v", plan.Notes)
+	}
+	if got := dayString(plan.Weeks[0], 4); got != "07:45-08:30 MU, 08:35-09:20 E, 09:40-10:25 D, 10:30-11:15 PH" {
+		t.Errorf("A Friday (holiday in the target week) not filled: %s", got)
+	}
+	if got := dayString(plan.Weeks[1], 4); got != "" {
+		t.Errorf("B Friday should be free: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Ohne Unterricht im Regelplan: Fr (Woche B)") ||
+		!strings.Contains(notes, "Ohne Unterricht (Ferien?): KW 51, 52") {
+		t.Errorf("notes: %s", notes)
+	}
+	// Without holiday calendar the free day can't be told from a holiday:
+	// it counts as missing data, and the notes say so.
+	plan = BuildRegularPlan(tts, ks, nil)
+	notes := strings.Join(plan.Notes, "\n")
+	if plan.Alternating || !strings.Contains(notes, "Ferienkalender nicht verfügbar, Tage ohne Unterricht als Ferien gewertet") ||
+		!strings.Contains(notes, "Fr KW 45") || strings.Contains(notes, "Fr KW 51") {
+		t.Errorf("without calendar: %v", plan.Notes)
 	}
 }
