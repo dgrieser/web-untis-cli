@@ -3,6 +3,8 @@ package webuntis
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,20 +54,14 @@ func full(extra map[int][]string) map[int][]string {
 
 func without(m map[int][]string, wd int, drop ...string) map[int][]string {
 	out := map[int][]string{}
-	for k, v := range m {
-		out[k] = v
-	}
+	maps.Copy(out, m)
 	if drop == nil {
 		delete(out, wd)
 		return out
 	}
 	var keep []string
 	for _, e := range m[wd] {
-		found := false
-		for _, d := range drop {
-			found = found || d == e
-		}
-		if !found {
+		if !slices.Contains(drop, e) {
 			keep = append(keep, e)
 		}
 	}
@@ -237,5 +233,93 @@ func TestRegularPlanBaseTimetable(t *testing.T) {
 	}
 	if got := dayString(w, 1); got != "07:45-08:30 E" {
 		t.Errorf("holiday Tuesday not filled from other weeks: %s", got)
+	}
+}
+
+// Review finding: an anomalous week next to the target week must not become
+// the template of the B week.
+func TestRegularPlanAnomalousNearestOddWeek(t *testing.T) {
+	a := full(map[int][]string{1: {"7:INF", "8:INF"}})
+	b := without(full(nil), 2, "3:GE")
+	b[2] = append(b[2], "3:EK")
+	c := without(b, 2, "3:EK")
+	c[2] = append(c[2], "3:CH")
+	plan := build(map[int]*Timetable{
+		-3: week(-3, b), -2: week(-2, a), -1: week(-1, b), 0: week(0, a),
+		1: week(1, c), 2: week(2, a), 3: week(3, b), 4: week(4, a),
+	})
+	if !plan.Alternating || len(plan.Weeks) != 2 {
+		t.Fatalf("A/B rhythm not detected: %v", plan.Notes)
+	}
+	B := plan.Weeks[1]
+	if got := dayString(B, 2); !strings.Contains(got, "EK") || strings.Contains(got, "CH") {
+		t.Errorf("B week taken from the anomalous week: %s (%v)", got, plan.Notes)
+	}
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "Nicht deckungsgleich, nicht verwendet: KW 49") {
+		t.Errorf("anomalous week not reported: %v", plan.Notes)
+	}
+}
+
+// Review finding: a lesson that moves into a free period is a plan change,
+// the result must not contain it twice (old and new period).
+func TestRegularPlanLessonMovedIntoFreePeriod(t *testing.T) {
+	old := full(nil)
+	moved := without(full(map[int][]string{0: {"7:M"}}), 0, "3:M")
+	plan := build(map[int]*Timetable{
+		-1: week(-1, old), 0: week(0, old),
+		1: week(1, moved), 2: week(2, moved), 3: week(3, moved), 4: week(4, moved),
+	})
+	if got := dayString(plan.Weeks[0], 0); got != "07:45-09:20 D, 09:40-10:25 M, 10:30-11:15 E" {
+		t.Errorf("hybrid of old and new plan: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Planwechsel), nicht verwendet: KW 49, 50, 51, 52") {
+		t.Errorf("plan change not reported: %s", notes)
+	}
+}
+
+// Review finding: parts of a lesson outside the time grid must not be cut
+// off, even without other weeks.
+func TestRegularPlanKeepsTimesOutsideGrid(t *testing.T) {
+	tt := week(0, map[int][]string{0: {"1:D", "2:D"}})
+	d := tt.Days[0].Date
+	tt.Days[0].Lessons = append(tt.Days[0].Lessons,
+		Lesson{IDs: []int{90}, Start: hhmm(d, 1300), End: hhmm(d, 1350), Subjects: []Element{{Name: "AG"}}},
+		Lesson{IDs: []int{91}, Start: hhmm(d, 1530), End: hhmm(d, 1615), Subjects: []Element{{Name: "CH"}}})
+	tt.Days[0].Lessons[0].Start = hhmm(d, 740)
+	plan := BuildRegularPlan([]*Timetable{tt}, []int{0})
+	if got := dayString(plan.Weeks[0], 0); got != "07:40-08:30 D, 08:35-09:20 D, 13:00-13:50 AG, 15:30-16:15 CH" &&
+		got != "07:40-09:20 D, 13:00-13:50 AG, 15:30-16:15 CH" {
+		t.Errorf("lesson times changed: %s", got)
+	}
+}
+
+// Review finding: a weekday the API left out entirely is filled too.
+func TestRegularPlanMissingWeekday(t *testing.T) {
+	base := week(0, full(nil))
+	base.Days = append(base.Days[:1:1], base.Days[2:]...) // no Tuesday at all
+	plan := BuildRegularPlan([]*Timetable{week(-1, full(nil)), base, week(1, full(nil))}, []int{-1, 0, 1})
+	w := plan.Weeks[0]
+	if len(w.Days) != 5 || w.Days[1].Date.Day() != 24 {
+		t.Fatalf("days: %d", len(w.Days))
+	}
+	if got := dayString(w, 1); got != "07:45-08:30 M, 08:35-09:20 BI, 09:40-10:25 E, 10:30-12:20 SP" {
+		t.Errorf("Tuesday not reconstructed: %s", got)
+	}
+}
+
+// Review finding: pages (and the calendar export) carry the dates of the
+// requested week, also if another week was the template.
+func TestRegularPlanPagesAnchoredAtRequestedWeek(t *testing.T) {
+	plan := build(map[int]*Timetable{0: week(0, map[int][]string{}), 2: week(2, full(nil)), 4: week(4, full(nil))})
+	if len(plan.Weeks) != 1 || plan.Weeks[0].Start.Day() != 7 {
+		t.Fatalf("template: %+v", plan.Weeks)
+	}
+	mon := time.Date(2026, 11, 23, 0, 0, 0, 0, time.Local)
+	pages := plan.Pages(mon)
+	if len(pages) != 1 || !pages[0].Start.Equal(mon) || !pages[0].Days[0].Date.Equal(mon) || pages[0].Days[0].Lessons[0].Start.Day() != 23 {
+		t.Errorf("page not dated like the requested week: %v / %v", pages[0].Start, pages[0].Days[0].Lessons[0].Start)
+	}
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "KW 48 ohne Unterricht, Vorlage ist KW 50") {
+		t.Errorf("notes: %v", plan.Notes)
 	}
 }

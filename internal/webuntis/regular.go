@@ -362,20 +362,37 @@ func newPlanWeek(k int, tt *Timetable) *planWeek {
 				continue
 			}
 			ls, le := clock(l.Start), clock(l.End)
-			placed := false
+			add := func(from, to, idx int, key string) {
+				p := l
+				p.Start, p.End = at(pd.date, from), at(pd.date, to)
+				pd.slots[key] = append(pd.slots[key], piece{p, idx})
+			}
+			outside := func(from, to int) string { return fmt.Sprintf("t%04d-%04d", from/60*100+from%60, to/60*100+to%60) }
+			// Split at the periods of the time grid; parts before the first
+			// and after the last period it touches are kept as pieces of
+			// their own, so no teaching time is lost. Breaks between periods
+			// come back when the pieces are merged again.
+			first, last := -1, -1
 			for i, u := range tt.TimeGrid {
 				us, ue := u.StartTime/100*60+u.StartTime%100, u.EndTime/100*60+u.EndTime%100
 				if ls < ue && le > us {
-					p := l
-					p.Start, p.End = at(pd.date, max(ls, us)), at(pd.date, min(le, ue))
-					key := fmt.Sprintf("%04d-%04d", u.StartTime, u.EndTime)
-					pd.slots[key] = append(pd.slots[key], piece{p, i})
-					placed = true
+					add(max(ls, us), min(le, ue), i, fmt.Sprintf("%04d-%04d", u.StartTime, u.EndTime))
+					if first < 0 || us < first {
+						first = us
+					}
+					last = max(last, ue)
 				}
 			}
-			if !placed {
-				key := l.Start.Format("1504") + "-" + l.End.Format("1504")
-				pd.slots[key] = append(pd.slots[key], piece{l, -1})
+			switch {
+			case first < 0:
+				add(ls, le, -1, outside(ls, le))
+			default:
+				if ls < first {
+					add(ls, first, -1, outside(ls, first))
+				}
+				if le > last {
+					add(last, le, -1, outside(last, le))
+				}
 			}
 		}
 		w.days[weekdayIndex(d.Date)] = pd
@@ -395,6 +412,16 @@ func (w *planWeek) hasData() bool {
 }
 
 func (w *planWeek) week() int { return isoWeek(w.tt.Start) }
+
+// dayOf returns the day of the timetable with weekday wd, if any.
+func (w *planWeek) dayOf(wd int) *TimetableDay {
+	for i, d := range w.tt.Days {
+		if weekdayIndex(d.Date) == wd {
+			return &w.tt.Days[i]
+		}
+	}
+	return nil
+}
 
 // lessonSig identifies a lesson for comparisons: subjects and teachers.
 // Rooms are ignored, they change too often.
@@ -465,20 +492,44 @@ func compare(a, b *planWeek) comparison {
 // identical and there is enough overlap to tell.
 func (c comparison) matches() bool { return c.conflicts == 0 && c.overlap >= 2 }
 
-// nearest returns the week with data nearest to k=0 for which ok returns
-// true, preferring the future on ties.
-func nearest(weeks []*planWeek, ok func(*planWeek) bool) *planWeek {
+// nearer reports whether a is nearer to the target week than b, preferring
+// the future on ties.
+func nearer(a, b *planWeek) bool {
+	return abs(a.k) < abs(b.k) || abs(a.k) == abs(b.k) && a.k > b.k
+}
+
+// representative returns the week of ws (with lessons) for which ok returns
+// true that overlays most of the other weeks exactly, so an anomalous week
+// is never the template. The target week gets one extra point, remaining
+// ties go to the nearest week.
+func representative(ws []*planWeek, ok func(*planWeek) bool) *planWeek {
 	var best *planWeek
-	for _, w := range weeks {
+	bestScore := -1
+	for _, w := range ws {
 		if !w.hasData() || !ok(w) {
 			continue
 		}
-		if best == nil || abs(w.k) < abs(best.k) || abs(w.k) == abs(best.k) && w.k > best.k {
-			best = w
+		score := 0
+		for _, o := range ws {
+			if o != w && o.hasData() && ok(o) && compare(w, o).matches() {
+				score++
+			}
+		}
+		if w.k == 0 {
+			score++
+		}
+		if best == nil || score > bestScore || score == bestScore && nearer(w, best) {
+			best, bestScore = w, score
 		}
 	}
 	return best
 }
+
+func all(*planWeek) bool { return true }
+
+func isEven(w *planWeek) bool { return !odd(w.k) }
+
+func isOdd(w *planWeek) bool { return odd(w.k) }
 
 func abs(i int) int {
 	if i < 0 {
@@ -505,23 +556,32 @@ func weekList(ws []*planWeek) string {
 // (0 = target week, the baseline).
 func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 	plan := &RegularPlan{}
-	var all []*planWeek
+	var weeks []*planWeek
 	var target *planWeek
 	for i, tt := range tts {
 		w := newPlanWeek(ks[i], tt)
-		all = append(all, w)
+		weeks = append(weeks, w)
 		if w.k == 0 {
 			target = w
 		}
 	}
-	if target == nil && len(all) > 0 {
-		target = all[0]
+	if target == nil && len(weeks) > 0 {
+		target = weeks[0]
 	}
 	if target == nil {
 		return plan
 	}
-	A := nearest(all, func(w *planWeek) bool { return !odd(w.k) })
-	B := nearest(all, func(w *planWeek) bool { return odd(w.k) })
+	// A/B rhythm, judged on all weeks first; it decides which weeks are
+	// compared with each other when looking for plan changes.
+	rhythm := alternates(weeks)
+	class := func(w *planWeek) int {
+		if rhythm && odd(w.k) {
+			return 1
+		}
+		return 0
+	}
+	A := representative(weeks, isEven)
+	B := representative(weeks, isOdd)
 	if A == nil {
 		A, B = B, nil
 	}
@@ -532,14 +592,15 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		plan.Notes = append(plan.Notes, "Kein Unterricht in den verglichenen Wochen gefunden")
 		return plan
 	}
-	if A != target && !odd(A.k) {
-		plan.Notes = append(plan.Notes, fmt.Sprintf("KW %d ohne Unterricht, Basis ist KW %d", target.week(), A.week()))
-	}
 
-	// Plan changes: going away from the target week, the first of two
-	// consecutive weeks that fit neither the A nor the B week starts a
-	// different timetable; it and all weeks beyond it are ignored. A single
-	// deviating week is kept here (it is no gap filler, see below).
+	// Plan changes: going away from the target week, a week starts a
+	// different timetable if (a) it and the next week fit neither the A
+	// nor the B week, or (b) a slot holds something (a lesson or a free
+	// period) that never occurred there in the weeks before, and the next
+	// week of the same kind holds the same. (b) also catches lessons that
+	// moved into a free period. The week and all weeks beyond it are
+	// ignored. A single deviating week is no plan change (and no gap
+	// filler, see below).
 	fitsNeither := func(w *planWeek) bool {
 		if w == A || w == B {
 			return false
@@ -549,10 +610,10 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 	var era, other []*planWeek
 	for _, dir := range []int{-1, 1} {
 		var side []*planWeek // ordered away from the target week
-		for i := range all {
-			w := all[i]
+		for i := range weeks {
+			w := weeks[i]
 			if dir < 0 {
-				w = all[len(all)-1-i]
+				w = weeks[len(weeks)-1-i]
 			}
 			if w.k*dir > 0 || w.k == 0 && dir < 0 {
 				side = append(side, w)
@@ -560,12 +621,23 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		}
 		broken := false
 		for i, w := range side {
-			if !broken && w.hasData() && fitsNeither(w) {
-				for _, n := range side[i+1:] {
-					if n.hasData() {
-						broken = fitsNeither(n)
-						break
+			if !broken && w.k != 0 && w.hasData() {
+				if fitsNeither(w) {
+					for _, n := range side[i+1:] {
+						if n.hasData() {
+							broken = fitsNeither(n)
+							break
+						}
 					}
+				}
+				if !broken {
+					var before []*planWeek
+					for _, o := range weeks {
+						if !slices.Contains(side[i:], o) {
+							before = append(before, o)
+						}
+					}
+					broken = startsNewPlan(side, i, before, class)
 				}
 			}
 			if broken {
@@ -579,19 +651,17 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 	}
 	sort.Slice(era, func(i, j int) bool { return era[i].k < era[j].k })
 	sort.Slice(other, func(i, j int) bool { return other[i].k < other[j].k })
-	if B != nil && !slices.Contains(era, B) {
-		B = nil
-	}
 	if len(other) > 0 {
 		plan.Notes = append(plan.Notes, "Anderer Stundenplan (Planwechsel), nicht verwendet: "+weekList(other))
 	}
 
-	plan.Alternating = B != nil && alternates(era)
 	type group struct {
 		base    *planWeek
 		members []*planWeek
 	}
 	var groups []group
+	A, B = representative(era, isEven), representative(era, isOdd)
+	plan.Alternating = A != nil && B != nil && alternates(era)
 	if plan.Alternating {
 		var even, oddW []*planWeek
 		for _, w := range era {
@@ -604,11 +674,14 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		groups = []group{{A, even}, {B, oddW}}
 		plan.Notes = append(plan.Notes, fmt.Sprintf("Zweiwöchentlicher Rhythmus erkannt: Woche A wie KW %d, Woche B wie KW %d", A.week(), B.week()))
 	} else {
-		base := A
-		if B != nil && abs(B.k) < abs(A.k) {
-			base = B // target week without lessons, the odd neighbour is nearer
+		groups = []group{{representative(era, all), era}}
+	}
+	if base := groups[0].base; base != target {
+		why := "ohne Unterricht"
+		if target.hasData() {
+			why = "weicht von den anderen Wochen ab"
 		}
-		groups = []group{{base, era}}
+		plan.Notes = append(plan.Notes, fmt.Sprintf("KW %d %s, Vorlage ist KW %d", target.week(), why, base.week()))
 	}
 
 	var used, mismatched, empty []*planWeek
@@ -656,6 +729,50 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		plan.Notes = append(plan.Notes, "Ohne Unterricht (Ferien?): "+weekList(empty))
 	}
 	return plan
+}
+
+// startsNewPlan reports whether side[i] starts a different timetable: on a
+// day of side[i], some slot holds something that no week of the same kind
+// in before had (at least two of them have lessons that day), and the next
+// week of the same kind in side with lessons that day holds the same.
+func startsNewPlan(side []*planWeek, i int, before []*planWeek, class func(*planWeek) int) bool {
+	w := side[i]
+	for wd := range 7 {
+		if !w.known(wd) {
+			continue
+		}
+		var prev []*planWeek
+		for _, b := range before {
+			if class(b) == class(w) && b.known(wd) {
+				prev = append(prev, b)
+			}
+		}
+		var next *planWeek
+		for _, n := range side[i+1:] {
+			if class(n) == class(w) && n.known(wd) {
+				next = n
+				break
+			}
+		}
+		if len(prev) < 2 || next == nil {
+			continue
+		}
+		keys := append(w.keys(wd), next.keys(wd)...)
+		for _, p := range prev {
+			keys = append(keys, p.keys(wd)...)
+		}
+		slices.Sort(keys)
+		for _, key := range slices.Compact(keys) {
+			v := w.sig(wd, key)
+			if next.sig(wd, key) != v {
+				continue
+			}
+			if !slices.ContainsFunc(prev, func(p *planWeek) bool { return p.sig(wd, key) == v }) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // alternates reports whether the weeks follow an A/B rhythm: some slot
@@ -720,10 +837,18 @@ func fill(base *planWeek, fillers []*planWeek) (*Timetable, map[*planWeek]int) {
 	out.Regular = true
 	out.Days = nil
 	src := map[*planWeek]int{}
-	for _, d := range base.tt.Days {
-		nd := TimetableDay{Date: d.Date, Resource: d.Resource}
-		wd := weekdayIndex(d.Date)
-		day := dates.Day(d.Date)
+	// Every weekday Monday to Friday (and the weekend if any week has
+	// lessons then), even if the API left a day out.
+	monday := dates.Monday(base.tt.Start)
+	for wd := range 7 {
+		day := monday.AddDate(0, 0, wd)
+		nd := TimetableDay{Date: day}
+		if d := base.dayOf(wd); d != nil {
+			nd.Date, nd.Resource = d.Date, d.Resource
+		}
+		if wd >= 5 && !base.known(wd) && !slices.ContainsFunc(fillers, func(f *planWeek) bool { return f.known(wd) }) {
+			continue
+		}
 		keys := base.keys(wd)
 		for _, f := range fillers {
 			if f.known(wd) {
@@ -822,6 +947,29 @@ func mergePieces(pieces []piece) []Lesson {
 			out = append(out, l)
 			lastIdx = append(lastIdx, p.idx)
 		}
+	}
+	return out
+}
+
+// Pages returns the weeks of the plan as the week of monday and, for an
+// A/B rhythm, the week after it, so the dates are those of the requested
+// week even if another week served as template.
+func (p *RegularPlan) Pages(monday time.Time) []*Timetable {
+	monday = dates.Monday(monday)
+	var out []*Timetable
+	for i, w := range p.Weeks {
+		start := monday.AddDate(0, 0, 7*i)
+		pg := p.Project(start, start.AddDate(0, 0, 4))
+		for _, d := range w.Days {
+			if wd := weekdayIndex(d.Date); wd >= 5 {
+				pg.End = start.AddDate(0, 0, wd)
+			}
+		}
+		if pg.End.After(start.AddDate(0, 0, 4)) {
+			pg = p.Project(start, pg.End)
+		}
+		pg.WeekLabel = w.WeekLabel
+		out = append(out, pg)
 	}
 	return out
 }

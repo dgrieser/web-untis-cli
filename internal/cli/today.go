@@ -303,8 +303,11 @@ skip with --no-notes).`,
 					pages = []*webuntis.Timetable{tt}
 					plan.Weeks = pages
 				} else {
-					pages = plan.Weeks
-					tt = plan.Project(pages[0].Start, pages[0].Start.AddDate(0, 0, 7*len(pages)-3))
+					// Dated like the requested week, even if another week
+					// served as template.
+					pages = plan.Pages(start)
+					plan.Weeks = pages
+					tt = plan.Project(pages[0].Start, pages[len(pages)-1].End)
 				}
 				data = plan
 				printPlanNotes(plan)
