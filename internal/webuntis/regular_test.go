@@ -467,3 +467,35 @@ func TestRegularPlanFreeWeekday(t *testing.T) {
 		t.Errorf("without calendar: %v", plan.Notes)
 	}
 }
+
+// Review finding: a weekday that became free with a plan change in the
+// target week (no later weeks yet) stays free; a free day with lessons on
+// that weekday before and after it is an unlisted holiday and is filled.
+func TestRegularPlanTargetFreeDay(t *testing.T) {
+	schoolDay := func(d time.Time) bool { return d.Weekday() != time.Saturday && d.Weekday() != time.Sunday }
+	weeks := func(from, to int, target map[int][]string) ([]*Timetable, []int) {
+		var tts []*Timetable
+		var ks []int
+		for k := from; k <= to; k++ {
+			spec := full(nil)
+			if k == 0 {
+				spec = target
+			}
+			tts, ks = append(tts, week(k, spec)), append(ks, k)
+		}
+		return tts, ks
+	}
+	tts, ks := weeks(-4, 0, without(full(nil), 4, "1:MU", "2:E", "3:D", "4:PH"))
+	plan := BuildRegularPlan(tts, ks, schoolDay)
+	if got := dayString(plan.Weeks[0], 4); got != "" {
+		t.Errorf("free Friday of the target week outvoted: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Fr frei wie in KW 48, Unterricht nur in früheren Wochen") {
+		t.Errorf("notes: %s", notes)
+	}
+	tts, ks = weeks(-2, 2, without(full(nil), 4, "1:MU", "2:E", "3:D", "4:PH"))
+	plan = BuildRegularPlan(tts, ks, schoolDay)
+	if got := dayString(plan.Weeks[0], 4); !strings.Contains(got, "PH") {
+		t.Errorf("unlisted holiday not filled: %s (%v)", got, plan.Notes)
+	}
+}

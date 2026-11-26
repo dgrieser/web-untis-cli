@@ -716,7 +716,15 @@ func BuildRegularPlan(tts []*Timetable, ks []int, schoolDay func(time.Time) bool
 			}
 		}
 		sort.SliceStable(voters, func(i, j int) bool { return nearer(voters[i], voters[j]) })
-		tt, src := compose(base, voters)
+		tt, src, kept := compose(base, voters)
+		for _, kf := range kept {
+			when := "früheren"
+			if kf.later {
+				when = "späteren"
+			}
+			plan.Notes = append(plan.Notes, fmt.Sprintf("%s frei wie in KW %d, Unterricht nur in %s Wochen (Planwechsel?)",
+				dates.WeekdayShort(dates.Monday(base.tt.Start).AddDate(0, 0, kf.wd)), base.week(), when))
+		}
 		if base == nil {
 			// Majority weeks: report the ones that were outvoted somewhere.
 			res := newPlanWeek(0, tt, schoolDay)
@@ -897,6 +905,13 @@ func alternates(weeks []*planWeek) bool {
 	return false
 }
 
+// keptFree is a free weekday of the base week kept free although other
+// weeks (only earlier or only later ones) have lessons then.
+type keptFree struct {
+	wd    int
+	later bool // the other weeks with lessons are later ones
+}
+
 // compose builds a regular week from voters (sorted nearest first).
 // With a base week, base is authoritative for its lessons, and a free
 // period of it gets a lesson if at least as many voters have that lesson
@@ -904,15 +919,16 @@ func alternates(weeks []*planWeek) bool {
 // slot gets what most voters have there (lesson or free period), ties go to
 // the nearest week. Dates are those of base or the nearest voter. It
 // returns how many slots each voter contributed.
-func compose(base *planWeek, voters []*planWeek) (*Timetable, map[*planWeek]int) {
+func compose(base *planWeek, voters []*planWeek) (out *Timetable, src map[*planWeek]int, kept []keptFree) {
 	ref := base
 	if ref == nil {
 		ref = voters[0]
 	}
-	out := *ref.tt
+	tt := *ref.tt
+	out = &tt
 	out.Regular = true
 	out.Days = nil
-	src := map[*planWeek]int{}
+	src = map[*planWeek]int{}
 	knows := func(wd int) bool {
 		return base != nil && base.lessons(wd) || slices.ContainsFunc(voters, func(f *planWeek) bool { return f.lessons(wd) })
 	}
@@ -927,6 +943,20 @@ func compose(base *planWeek, voters []*planWeek) (*Timetable, map[*planWeek]int)
 		nd := TimetableDay{Date: day}
 		if d := ref.dayOf(wd); d != nil {
 			nd.Date, nd.Resource = d.Date, d.Resource
+		}
+		// A known free day of the base week stays free unless weeks on both
+		// sides of it have lessons that day: a plan change shows on one
+		// side only, an unlisted holiday has lessons before and after it.
+		if base != nil && base.days[wd] != nil && base.days[wd].free {
+			earlier := slices.ContainsFunc(voters, func(f *planWeek) bool { return f.k < base.k && f.lessons(wd) })
+			later := slices.ContainsFunc(voters, func(f *planWeek) bool { return f.k > base.k && f.lessons(wd) })
+			if !earlier || !later {
+				if earlier || later {
+					kept = append(kept, keptFree{wd, later})
+				}
+				out.Days = append(out.Days, nd)
+				continue
+			}
 		}
 		var keys []string
 		if base != nil {
@@ -994,7 +1024,7 @@ func compose(base *planWeek, voters []*planWeek) (*Timetable, map[*planWeek]int)
 		nd.Lessons = mergePieces(pieces)
 		out.Days = append(out.Days, nd)
 	}
-	return &out, src
+	return out, src, kept
 }
 
 // mergePieces joins the pieces of consecutive periods with the same lesson
