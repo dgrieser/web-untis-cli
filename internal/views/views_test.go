@@ -272,3 +272,34 @@ func TestTimetableRegularAlternating(t *testing.T) {
 		_ = os.WriteFile(dir+"/regular-ab.html", []byte(page), 0o644)
 	}
 }
+
+func TestTimetableRegularMarksNoToday(t *testing.T) {
+	for _, regular := range []bool{false, true} {
+		tt := fullWeek()
+		if regular {
+			tt = tt.WithoutChanges()
+		}
+		tt.Days[1].Date = dates.Today()
+		grid, err := TimetableHTML([]*webuntis.Timetable{tt}, "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		list, err := TimetableHTML([]*webuntis.Timetable{tt}, "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marks := map[string]bool{
+			"grid head":   strings.Contains(grid, `class="dayhead today"`),
+			"grid cell":   strings.Contains(grid, `class="cell today"`),
+			"grid legend": strings.Contains(grid, "</span>Heute</span>"),
+			"list":        strings.Contains(list, `class="pill">heute`),
+			"markdown":    strings.Contains(TimetableList(tt, ""), "· heute"),
+			"pretty":      strings.Contains(TimetableGridPretty(tt, "", false, 120), " •"),
+		}
+		for where, marked := range marks {
+			if marked == regular {
+				t.Errorf("regular=%v: today marked in %s: %v", regular, where, marked)
+			}
+		}
+	}
+}

@@ -503,7 +503,7 @@ func (d *pdfDoc) gridPage(p htmlPage) {
 	legendTop := d.h - d.m - lineH(legendPt, 1.4)
 	keys := []string{"Änderung", "Entfall", "Prüfung", "Heute"}
 	if p.Regular {
-		keys = []string{"Heute"}
+		keys = nil // no changes, and no day is marked as today
 	}
 	d.legend(legendTop, legendPt, keys)
 

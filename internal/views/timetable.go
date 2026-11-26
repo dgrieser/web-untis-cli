@@ -86,6 +86,12 @@ func ttTitle(tt *webuntis.Timetable) string {
 	return fmt.Sprintf("📅 %s · %s", kind, name)
 }
 
+// isToday reports whether day should be marked as today. A regular
+// timetable is not about a particular week, so it marks no day.
+func isToday(tt *webuntis.Timetable, day time.Time) bool {
+	return !tt.Regular && dates.Day(day).Equal(dates.Today())
+}
+
 func rangeLabel(tt *webuntis.Timetable) string {
 	if tt.Regular && tt.WeekLabel != "" {
 		return "Regelstundenplan " + tt.WeekLabel + " · wie " + dateRangeLabel(tt)
@@ -120,7 +126,7 @@ func TimetableList(tt *webuntis.Timetable, name string) string {
 		}
 		any = true
 		h := dates.WeekdayLong(day.Date) + ", " + day.Date.Format("02.01.")
-		if dates.Day(day.Date).Equal(dates.Today()) {
+		if isToday(tt, day.Date) {
 			h += " · heute"
 		}
 		d.H(2, "%s", h)
@@ -326,7 +332,7 @@ func TimetableGridPretty(tt *webuntis.Timetable, name string, color bool, width 
 	headers := []string{""}
 	for _, day := range days {
 		h := dates.WeekdayShort(day.Date) + " " + day.Date.Format("02.01.")
-		if dates.Day(day.Date).Equal(dates.Today()) {
+		if isToday(tt, day.Date) {
 			h = todayStyle.Render(h + " •")
 		}
 		headers = append(headers, h)

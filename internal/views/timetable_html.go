@@ -169,7 +169,7 @@ func buildHTMLGrid(tt *webuntis.Timetable) *htmlGrid {
 	}
 	for ci, day := range days {
 		col := ci + 2
-		today := dates.Day(day.Date).Equal(dates.Today())
+		today := isToday(tt, day.Date)
 		hc := htmlCol{Weekday: dates.WeekdayLong(day.Date), Date: day.Date.Format("02.01."), Today: today}
 		if day.Status != "" && day.Status != "REGULAR" {
 			hc.Status = strings.ToLower(day.Status)
@@ -259,7 +259,7 @@ func buildHTMLDays(tt *webuntis.Timetable) []htmlDay {
 		if len(day.Lessons) == 0 && (wd == time.Saturday || wd == time.Sunday) {
 			continue
 		}
-		hd := htmlDay{Title: dates.WeekdayLong(day.Date) + ", " + day.Date.Format("02.01.2006"), Today: dates.Day(day.Date).Equal(dates.Today())}
+		hd := htmlDay{Title: dates.WeekdayLong(day.Date) + ", " + day.Date.Format("02.01.2006"), Today: isToday(tt, day.Date)}
 		if len(day.Lessons) == 0 {
 			hd.Note = "Kein Unterricht."
 			if day.Status != "" && day.Status != "REGULAR" {
