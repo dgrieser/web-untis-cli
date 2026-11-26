@@ -319,7 +319,80 @@ func TestRegularPlanPagesAnchoredAtRequestedWeek(t *testing.T) {
 	if len(pages) != 1 || !pages[0].Start.Equal(mon) || !pages[0].Days[0].Date.Equal(mon) || pages[0].Days[0].Lessons[0].Start.Day() != 23 {
 		t.Errorf("page not dated like the requested week: %v / %v", pages[0].Start, pages[0].Days[0].Lessons[0].Start)
 	}
-	if !strings.Contains(strings.Join(plan.Notes, "\n"), "KW 48 ohne Unterricht, Vorlage ist KW 50") {
+	if !strings.Contains(strings.Join(plan.Notes, "\n"), "KW 48 ohne Unterricht, Regelplan aus den Nachbarwochen\nMehrheit je Stunde aus KW 50, 52") {
 		t.Errorf("notes: %v", plan.Notes)
+	}
+}
+
+// Review finding: a holiday week between two timetables must not panic;
+// the plan of the nearest following week is used.
+func TestRegularPlanHolidayBetweenPlans(t *testing.T) {
+	old := full(nil)
+	changed := without(full(nil), 0, "3:M")
+	changed[0] = append(changed[0], "3:CH")
+	plan := build(map[int]*Timetable{
+		-2: week(-2, old), -1: week(-1, old), 0: week(0, nil),
+		1: week(1, changed), 2: week(2, changed),
+	})
+	if len(plan.Weeks) != 1 {
+		t.Fatalf("no regular plan: %v", plan.Notes)
+	}
+	if got := dayString(plan.Weeks[0], 0); !strings.Contains(got, "CH") || strings.Contains(got, " M") {
+		t.Errorf("Monday: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Planwechsel), nicht verwendet: KW 46, 47") {
+		t.Errorf("notes: %s", notes)
+	}
+}
+
+// Review finding: an A/B difference that is only a lesson more or less
+// (AG in A weeks) must not leak into the B week from one anomalous B week.
+func TestRegularPlanPresenceOnlyRhythm(t *testing.T) {
+	a := full(map[int][]string{3: {"7:AG", "8:AG"}})
+	b := full(nil)
+	plan := build(map[int]*Timetable{
+		-4: week(-4, a), -3: week(-3, b), -2: week(-2, a), -1: week(-1, b), 0: week(0, a),
+		1: week(1, a), 2: week(2, a), 3: week(3, b), 4: week(4, a),
+	})
+	if !plan.Alternating || len(plan.Weeks) != 2 {
+		t.Fatalf("A/B rhythm not detected: %v", plan.Notes)
+	}
+	if got := dayString(plan.Weeks[0], 3); !strings.Contains(got, "AG") {
+		t.Errorf("A week lost the AG: %s", got)
+	}
+	if got := dayString(plan.Weeks[1], 3); strings.Contains(got, "AG") {
+		t.Errorf("AG of the anomalous week in the B week: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Nicht deckungsgleich, nicht verwendet: KW 49") {
+		t.Errorf("notes: %s", notes)
+	}
+}
+
+// Review finding: a lesson moved into a free period is a plan change even
+// without earlier weeks.
+func TestRegularPlanLessonMovedWithoutHistory(t *testing.T) {
+	old := full(nil)
+	moved := without(full(map[int][]string{0: {"7:M"}}), 0, "3:M")
+	plan := build(map[int]*Timetable{0: week(0, old), 1: week(1, moved), 2: week(2, moved), 3: week(3, moved), 4: week(4, moved)})
+	if got := dayString(plan.Weeks[0], 0); got != "07:45-09:20 D, 09:40-10:25 M, 10:30-11:15 E" {
+		t.Errorf("hybrid of old and new plan: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Planwechsel), nicht verwendet: KW 49, 50, 51, 52") {
+		t.Errorf("notes: %s", notes)
+	}
+}
+
+// Review finding: a new timetable starting in the target week is not
+// outvoted by the older weeks.
+func TestRegularPlanNewPlanInTargetWeek(t *testing.T) {
+	old := full(nil)
+	changed := without(full(nil), 0, "3:M")
+	changed[0] = append(changed[0], "3:CH")
+	plan := build(map[int]*Timetable{-4: week(-4, old), -3: week(-3, old), -2: week(-2, old), -1: week(-1, old), 0: week(0, changed)})
+	if got := dayString(plan.Weeks[0], 0); !strings.Contains(got, "CH") || strings.Contains(got, " M") {
+		t.Errorf("target week outvoted: %s", got)
+	}
+	if notes := strings.Join(plan.Notes, "\n"); !strings.Contains(notes, "Planwechsel), nicht verwendet: KW 44, 45, 46, 47") {
+		t.Errorf("notes: %s", notes)
 	}
 }

@@ -498,39 +498,6 @@ func nearer(a, b *planWeek) bool {
 	return abs(a.k) < abs(b.k) || abs(a.k) == abs(b.k) && a.k > b.k
 }
 
-// representative returns the week of ws (with lessons) for which ok returns
-// true that overlays most of the other weeks exactly, so an anomalous week
-// is never the template. The target week gets one extra point, remaining
-// ties go to the nearest week.
-func representative(ws []*planWeek, ok func(*planWeek) bool) *planWeek {
-	var best *planWeek
-	bestScore := -1
-	for _, w := range ws {
-		if !w.hasData() || !ok(w) {
-			continue
-		}
-		score := 0
-		for _, o := range ws {
-			if o != w && o.hasData() && ok(o) && compare(w, o).matches() {
-				score++
-			}
-		}
-		if w.k == 0 {
-			score++
-		}
-		if best == nil || score > bestScore || score == bestScore && nearer(w, best) {
-			best, bestScore = w, score
-		}
-	}
-	return best
-}
-
-func all(*planWeek) bool { return true }
-
-func isEven(w *planWeek) bool { return !odd(w.k) }
-
-func isOdd(w *planWeek) bool { return odd(w.k) }
-
 func abs(i int) int {
 	if i < 0 {
 		return -i
@@ -554,6 +521,19 @@ func weekList(ws []*planWeek) string {
 // BuildRegularPlan reconstructs the regular plan from regularized weeks
 // (see WithoutChanges). ks are the offsets of the weeks from the target week
 // (0 = target week, the baseline).
+//
+//  1. Anchor: the target week, or the nearest week with lessons if it has
+//     none (holidays).
+//  2. Era: going away from the anchor, the first week that persistently
+//     differs from the weeks accepted so far starts a different timetable
+//     (Stundenplanwechsel); it and all weeks beyond it are ignored. So the
+//     timetable of the anchor is never outvoted by an older or newer one.
+//  3. A/B rhythm: some slot consistently differs between even and odd
+//     weeks of the era.
+//  4. Each week (A, or A and B) is composed: the target week is
+//     authoritative for its lessons and its free periods are filled from
+//     weeks that overlay it exactly; without target week (B week, holiday)
+//     each slot gets what the majority of the weeks has there.
 func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 	plan := &RegularPlan{}
 	var weeks []*planWeek
@@ -571,21 +551,13 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 	if target == nil {
 		return plan
 	}
-	// A/B rhythm, judged on all weeks first; it decides which weeks are
-	// compared with each other when looking for plan changes.
-	rhythm := alternates(weeks)
-	class := func(w *planWeek) int {
-		if rhythm && odd(w.k) {
-			return 1
+	var anchor *planWeek
+	for _, w := range weeks {
+		if w.hasData() && (anchor == nil || nearer(w, anchor)) {
+			anchor = w
 		}
-		return 0
 	}
-	A := representative(weeks, isEven)
-	B := representative(weeks, isOdd)
-	if A == nil {
-		A, B = B, nil
-	}
-	if A == nil {
+	if anchor == nil {
 		empty := *target.tt
 		empty.Regular = true
 		plan.Weeks = []*Timetable{&empty}
@@ -593,52 +565,30 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		return plan
 	}
 
-	// Plan changes: going away from the target week, a week starts a
-	// different timetable if (a) it and the next week fit neither the A
-	// nor the B week, or (b) a slot holds something (a lesson or a free
-	// period) that never occurred there in the weeks before, and the next
-	// week of the same kind holds the same. (b) also catches lessons that
-	// moved into a free period. The week and all weeks beyond it are
-	// ignored. A single deviating week is no plan change (and no gap
-	// filler, see below).
-	fitsNeither := func(w *planWeek) bool {
-		if w == A || w == B {
-			return false
+	rhythm := alternates(weeks)
+	class := func(w *planWeek) int {
+		if rhythm && odd(w.k) {
+			return 1
 		}
-		return compare(A, w).conflicts > 0 && (B == nil || compare(B, w).conflicts > 0)
+		return 0
 	}
-	var era, other []*planWeek
+	era := []*planWeek{anchor}
+	var other []*planWeek
 	for _, dir := range []int{-1, 1} {
-		var side []*planWeek // ordered away from the target week
+		var side []*planWeek // ordered away from the anchor
 		for i := range weeks {
 			w := weeks[i]
 			if dir < 0 {
 				w = weeks[len(weeks)-1-i]
 			}
-			if w.k*dir > 0 || w.k == 0 && dir < 0 {
+			if (w.k-anchor.k)*dir > 0 {
 				side = append(side, w)
 			}
 		}
 		broken := false
 		for i, w := range side {
-			if !broken && w.k != 0 && w.hasData() {
-				if fitsNeither(w) {
-					for _, n := range side[i+1:] {
-						if n.hasData() {
-							broken = fitsNeither(n)
-							break
-						}
-					}
-				}
-				if !broken {
-					var before []*planWeek
-					for _, o := range weeks {
-						if !slices.Contains(side[i:], o) {
-							before = append(before, o)
-						}
-					}
-					broken = startsNewPlan(side, i, before, class)
-				}
+			if !broken && w.hasData() && startsNewPlan(w, side[i+1:], era, class) {
+				broken = true
 			}
 			if broken {
 				if w.hasData() {
@@ -649,19 +599,14 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 			era = append(era, w)
 		}
 	}
-	sort.Slice(era, func(i, j int) bool { return era[i].k < era[j].k })
-	sort.Slice(other, func(i, j int) bool { return other[i].k < other[j].k })
+	sortWeeks(era)
+	sortWeeks(other)
 	if len(other) > 0 {
 		plan.Notes = append(plan.Notes, "Anderer Stundenplan (Planwechsel), nicht verwendet: "+weekList(other))
 	}
 
-	type group struct {
-		base    *planWeek
-		members []*planWeek
-	}
-	var groups []group
-	A, B = representative(era, isEven), representative(era, isOdd)
-	plan.Alternating = A != nil && B != nil && alternates(era)
+	plan.Alternating = rhythm && alternates(era)
+	groups := [][]*planWeek{era}
 	if plan.Alternating {
 		var even, oddW []*planWeek
 		for _, w := range era {
@@ -671,41 +616,53 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 				even = append(even, w)
 			}
 		}
-		groups = []group{{A, even}, {B, oddW}}
-		plan.Notes = append(plan.Notes, fmt.Sprintf("Zweiwöchentlicher Rhythmus erkannt: Woche A wie KW %d, Woche B wie KW %d", A.week(), B.week()))
-	} else {
-		groups = []group{{representative(era, all), era}}
+		groups = [][]*planWeek{even, oddW}
+		plan.Notes = append(plan.Notes, fmt.Sprintf("Zweiwöchentlicher Rhythmus erkannt: Woche A wie KW %d, Woche B wie KW %d",
+			isoWeek(target.tt.Start), isoWeek(target.tt.Start.AddDate(0, 0, 7))))
 	}
-	if base := groups[0].base; base != target {
-		why := "ohne Unterricht"
-		if target.hasData() {
-			why = "weicht von den anderen Wochen ab"
-		}
-		plan.Notes = append(plan.Notes, fmt.Sprintf("KW %d %s, Vorlage ist KW %d", target.week(), why, base.week()))
+	if !target.hasData() {
+		plan.Notes = append(plan.Notes, fmt.Sprintf("KW %d ohne Unterricht, Regelplan aus den Nachbarwochen", target.week()))
 	}
 
-	var used, mismatched, empty []*planWeek
-	for gi, g := range groups {
-		var fillers []*planWeek
-		for _, w := range g.members {
+	var used, voted, mismatched, empty []*planWeek
+	for gi, members := range groups {
+		var base *planWeek
+		if slices.Contains(members, target) && target.hasData() {
+			base = target
+		}
+		var voters []*planWeek
+		for _, w := range members {
 			switch {
-			case w == g.base:
+			case w == base:
 			case !w.hasData():
-				empty = append(empty, w)
-			case compare(g.base, w).matches():
-				fillers = append(fillers, w)
+				if w != target {
+					empty = append(empty, w)
+				}
+			case base == nil || compare(base, w).matches():
+				voters = append(voters, w)
 			default:
 				mismatched = append(mismatched, w)
 			}
 		}
-		sort.SliceStable(fillers, func(i, j int) bool {
-			di, dj := abs(fillers[i].k-g.base.k), abs(fillers[j].k-g.base.k)
-			return di < dj || di == dj && fillers[i].k > fillers[j].k
-		})
-		tt, src := fill(g.base, fillers)
-		for _, w := range fillers {
-			if src[w] > 0 {
-				used = append(used, w)
+		sort.SliceStable(voters, func(i, j int) bool { return nearer(voters[i], voters[j]) })
+		tt, src := compose(base, voters)
+		if base == nil {
+			// Majority weeks: report the ones that were outvoted somewhere.
+			res := newPlanWeek(0, tt)
+			var kept []*planWeek
+			for _, w := range voters {
+				if c := compare(res, w); c.conflicts > 0 || c.presence > 0 {
+					mismatched = append(mismatched, w)
+				} else {
+					kept = append(kept, w)
+				}
+			}
+			voted = append(voted, kept...)
+		} else {
+			for _, w := range voters {
+				if src[w] > 0 {
+					used = append(used, w)
+				}
 			}
 		}
 		if plan.Alternating {
@@ -713,14 +670,15 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 		}
 		plan.Weeks = append(plan.Weeks, tt)
 	}
-	sortWeeks := func(ws []*planWeek) {
-		sort.Slice(ws, func(i, j int) bool { return ws[i].k < ws[j].k })
-	}
 	sortWeeks(used)
+	sortWeeks(voted)
 	sortWeeks(mismatched)
 	sortWeeks(empty)
 	if len(used) > 0 {
 		plan.Notes = append(plan.Notes, "Lücken ergänzt aus "+weekList(used))
+	}
+	if len(voted) > 0 {
+		plan.Notes = append(plan.Notes, "Mehrheit je Stunde aus "+weekList(voted))
 	}
 	if len(mismatched) > 0 {
 		plan.Notes = append(plan.Notes, "Nicht deckungsgleich, nicht verwendet: "+weekList(mismatched))
@@ -731,43 +689,52 @@ func BuildRegularPlan(tts []*Timetable, ks []int) *RegularPlan {
 	return plan
 }
 
-// startsNewPlan reports whether side[i] starts a different timetable: on a
-// day of side[i], some slot holds something that no week of the same kind
-// in before had (at least two of them have lessons that day), and the next
-// week of the same kind in side with lessons that day holds the same.
-func startsNewPlan(side []*planWeek, i int, before []*planWeek, class func(*planWeek) int) bool {
-	w := side[i]
+func sortWeeks(ws []*planWeek) {
+	sort.Slice(ws, func(i, j int) bool { return ws[i].k < ws[j].k })
+}
+
+// startsNewPlan reports whether w starts a different timetable than the
+// weeks of era: on a day of w, a slot holds something no era week of the
+// same kind (A/B) had there, and the next week of that kind (in next) with
+// lessons that day holds the same, so it is no one-off. Something new is
+//   - another lesson or a free period where the era always had a lesson
+//     (lesson replaced, moved away or dropped): one era week suffices;
+//   - a lesson where the era always had a free period: only with at least
+//     two era weeks, as a single week (the target week) may just lack the
+//     lesson; then it is a gap to fill, not a plan change.
+func startsNewPlan(w *planWeek, next []*planWeek, era []*planWeek, class func(*planWeek) int) bool {
 	for wd := range 7 {
 		if !w.known(wd) {
 			continue
 		}
 		var prev []*planWeek
-		for _, b := range before {
-			if class(b) == class(w) && b.known(wd) {
-				prev = append(prev, b)
+		for _, e := range era {
+			if class(e) == class(w) && e.known(wd) {
+				prev = append(prev, e)
 			}
 		}
-		var next *planWeek
-		for _, n := range side[i+1:] {
+		var confirm *planWeek
+		for _, n := range next {
 			if class(n) == class(w) && n.known(wd) {
-				next = n
+				confirm = n
 				break
 			}
 		}
-		if len(prev) < 2 || next == nil {
+		if len(prev) == 0 || confirm == nil {
 			continue
 		}
-		keys := append(w.keys(wd), next.keys(wd)...)
+		keys := append(w.keys(wd), confirm.keys(wd)...)
 		for _, p := range prev {
 			keys = append(keys, p.keys(wd)...)
 		}
 		slices.Sort(keys)
 		for _, key := range slices.Compact(keys) {
 			v := w.sig(wd, key)
-			if next.sig(wd, key) != v {
+			if confirm.sig(wd, key) != v || slices.ContainsFunc(prev, func(p *planWeek) bool { return p.sig(wd, key) == v }) {
 				continue
 			}
-			if !slices.ContainsFunc(prev, func(p *planWeek) bool { return p.sig(wd, key) == v }) {
+			addition := v != "" && !slices.ContainsFunc(prev, func(p *planWeek) bool { return p.sig(wd, key) != "" })
+			if !addition || len(prev) >= 2 {
 				return true
 			}
 		}
@@ -828,29 +795,42 @@ func alternates(weeks []*planWeek) bool {
 	return false
 }
 
-// fill builds the regular week from base, filling free slots from the
-// fillers (nearest first): a slot is taken if at least as many weeks have
-// the lesson as have the slot free. It returns how many slots each filler
-// contributed.
-func fill(base *planWeek, fillers []*planWeek) (*Timetable, map[*planWeek]int) {
-	out := *base.tt
+// compose builds a regular week from voters (sorted nearest first).
+// With a base week, base is authoritative for its lessons, and a free
+// period of it gets a lesson if at least as many voters have that lesson
+// as have the period free (base counting as free). Without base, each
+// slot gets what most voters have there (lesson or free period), ties go to
+// the nearest week. Dates are those of base or the nearest voter. It
+// returns how many slots each voter contributed.
+func compose(base *planWeek, voters []*planWeek) (*Timetable, map[*planWeek]int) {
+	ref := base
+	if ref == nil {
+		ref = voters[0]
+	}
+	out := *ref.tt
 	out.Regular = true
 	out.Days = nil
 	src := map[*planWeek]int{}
+	knows := func(wd int) bool {
+		return base != nil && base.known(wd) || slices.ContainsFunc(voters, func(f *planWeek) bool { return f.known(wd) })
+	}
 	// Every weekday Monday to Friday (and the weekend if any week has
 	// lessons then), even if the API left a day out.
-	monday := dates.Monday(base.tt.Start)
+	monday := dates.Monday(ref.tt.Start)
 	for wd := range 7 {
-		day := monday.AddDate(0, 0, wd)
-		nd := TimetableDay{Date: day}
-		if d := base.dayOf(wd); d != nil {
-			nd.Date, nd.Resource = d.Date, d.Resource
-		}
-		if wd >= 5 && !base.known(wd) && !slices.ContainsFunc(fillers, func(f *planWeek) bool { return f.known(wd) }) {
+		if wd >= 5 && !knows(wd) {
 			continue
 		}
-		keys := base.keys(wd)
-		for _, f := range fillers {
+		day := monday.AddDate(0, 0, wd)
+		nd := TimetableDay{Date: day}
+		if d := ref.dayOf(wd); d != nil {
+			nd.Date, nd.Resource = d.Date, d.Resource
+		}
+		var keys []string
+		if base != nil {
+			keys = base.keys(wd)
+		}
+		for _, f := range voters {
 			if f.known(wd) {
 				keys = append(keys, f.keys(wd)...)
 			}
@@ -858,40 +838,49 @@ func fill(base *planWeek, fillers []*planWeek) (*Timetable, map[*planWeek]int) {
 		slices.Sort(keys)
 		var pieces []piece
 		for _, key := range slices.Compact(keys) {
-			if base.sig(wd, key) != "" {
+			if base != nil && base.sig(wd, key) != "" {
 				pieces = append(pieces, base.days[wd].slots[key]...)
 				continue
 			}
-			free := 0
-			if base.known(wd) {
-				free = 1
-			}
 			count := map[string]int{}
 			first := map[string]*planWeek{} // nearest week with that content
-			var order []string
-			for _, f := range fillers {
-				if !f.known(wd) {
-					continue
-				}
-				s := f.sig(wd, key)
-				if s == "" {
-					free++
-					continue
-				}
+			var order []string              // contents, nearest first
+			vote := func(s string, f *planWeek) {
 				if count[s] == 0 {
 					first[s] = f
 					order = append(order, s)
 				}
 				count[s]++
 			}
-			best := ""
-			for _, s := range order {
-				if best == "" || count[s] > count[best] {
-					best = s
+			if base != nil && base.known(wd) {
+				vote("", base)
+			}
+			for _, f := range voters {
+				if f.known(wd) {
+					vote(f.sig(wd, key), f)
 				}
 			}
-			if best == "" || count[best] < free {
-				continue
+			best := ""
+			if base != nil {
+				// Lessons only compete with each other, then with "free".
+				for _, s := range order {
+					if s != "" && (best == "" || count[s] > count[best]) {
+						best = s
+					}
+				}
+				if best == "" || count[best] < count[""] {
+					continue
+				}
+			} else {
+				bestN := -1
+				for _, s := range order {
+					if count[s] > bestN {
+						best, bestN = s, count[s]
+					}
+				}
+				if best == "" {
+					continue
+				}
 			}
 			from := first[best]
 			src[from]++
